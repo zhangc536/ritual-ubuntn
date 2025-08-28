@@ -341,7 +341,7 @@ if [ "$update_config_and_restart" = "true" ]; then
     
     # 停止容器
     info "正在停止现有容器..."
-    if docker-compose down; then
+    if docker compose down; then
         info "容器已停止"
     else
         warn "停止容器时出现警告，继续执行..."
@@ -352,7 +352,7 @@ if [ "$update_config_and_restart" = "true" ]; then
     attempt=1
     while true; do
         info "尝试启动容器 （第 $attempt 次）..."
-        if docker-compose up node redis fluentbit; then
+        if docker compose up node redis fluentbit; then
             info "容器启动成功"
             # 启动日志后台保存
             (docker logs -f infernet-node > "$HOME/infernet-deployment.log" 2>&1 &)
@@ -584,7 +584,7 @@ if [ "$full_deploy" = "true" ]; then
     attempt=1
     while true; do
         info "尝试启动 Docker 容器 （第 $attempt 次）..."
-        if docker-compose -f "$HOME/infernet-container-starter/deploy/docker-compose.yaml" up -d; then
+        if docker compose -f "$HOME/infernet-container-starter/deploy/docker-compose.yaml" up -d; then
             info "Docker 容器启动成功。"
             (docker logs -f infernet-node > "$HOME/infernet-deployment.log" 2>&1 &)
             break
@@ -852,7 +852,7 @@ monitor_and_skip_trie_error() {
                 warn "检测到 missing trie node 错误区块，自动跳过到 $new_start 并重启节点..."
                 jq ".chain.snapshot_sync.starting_sub_id = $new_start" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
                 cd "$COMPOSE_DIR"
-                docker-compose restart node
+                docker compose restart node
                 sleep 60
             fi
         fi
