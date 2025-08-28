@@ -238,6 +238,47 @@ for port in 4000 6379 8545 5001; do
 done
 info "Redis 端口 6379 被限制为本地访问，无需外部开放。"
 
+# 添加部署模式选择菜单
+info "请选择部署模式："
+select deploy_mode in "全新部署" "继续现有环境" "直接部署合约" "更新配置并重启容器" "退出"; do
+    case $deploy_mode in
+        "全新部署")
+            info "清除旧节点数据..."
+            if [ -d "$HOME/infernet-container-starter" ]; then
+                cd "$HOME/infernet-container-starter" && sudo docker compose -f deploy/docker-compose.yaml down -v 2>/dev/null || warn "停止容器失败，强制清理"
+                cd "$HOME" && rm -rf infernet-container-starter || warn "删除旧目录失败，手动清理"
+            fi
+            skip_to_deploy=false && full_deploy=true
+            break
+            ;;
+        "继续现有环境")
+            if [ ! -d "$HOME/infernet-container-starter" ] || [ ! -d "$HOME/infernet-container-starter/projects/hello-world/contracts" ]; then
+                error "现有环境不完整，请选择「全新部署」"
+            fi
+            skip_to_deploy=false && full_deploy=false
+            break
+            ;;
+        "直接部署合约")
+            if [ ! -d "$HOME/infernet-container-starter/projects/hello-world/contracts" ]; then
+                error "合约目录缺失，请先执行「全新部署」"
+            fi
+            skip_to_deploy=true && full_deploy=false
+            break
+            ;;
+        "更新配置并重启容器")
+            if [ ! -d "$HOME/infernet-container-starter/deploy" ]; then
+                error "部署目录缺失，请先执行「全新部署」"
+            fi
+            update_config_and_restart=true && skip_to_deploy=false && full_deploy=false
+            break
+            ;;
+        "退出")
+            warn "脚本已退出，未做任何更改"
+            exit 0
+            ;;
+    esac
+done
+
 # 加载或提示输入配置（仅在全量部署或直接部署合约时需要）
 if [ "$skip_to_deploy" = "true" ] || ([ "$yn" != "退出" ] && [ "$update_config_and_restart" != "true" ]); then
     echo "[8/15] 📝 加载或输入配置..." | tee -a "$log_file"
@@ -370,47 +411,6 @@ if [ "$skip_to_deploy" = "true" ]; then
         info "Foundry 已安装，forge 版本：$(forge --version)"
     fi
 fi
-
-# 添加部署模式选择菜单
-info "请选择部署模式："
-select deploy_mode in "全新部署" "继续现有环境" "直接部署合约" "更新配置并重启容器" "退出"; do
-    case $deploy_mode in
-        "全新部署")
-            info "清除旧节点数据..."
-            if [ -d "$HOME/infernet-container-starter" ]; then
-                cd "$HOME/infernet-container-starter" && sudo docker compose -f deploy/docker-compose.yaml down -v 2>/dev/null || warn "停止容器失败，强制清理"
-                cd "$HOME" && rm -rf infernet-container-starter || warn "删除旧目录失败，手动清理"
-            fi
-            skip_to_deploy=false && full_deploy=true
-            break
-            ;;
-        "继续现有环境")
-            if [ ! -d "$HOME/infernet-container-starter" ] || [ ! -d "$HOME/infernet-container-starter/projects/hello-world/contracts" ]; then
-                error "现有环境不完整，请选择「全新部署」"
-            fi
-            skip_to_deploy=false && full_deploy=false
-            break
-            ;;
-        "直接部署合约")
-            if [ ! -d "$HOME/infernet-container-starter/projects/hello-world/contracts" ]; then
-                error "合约目录缺失，请先执行「全新部署」"
-            fi
-            skip_to_deploy=true && full_deploy=false
-            break
-            ;;
-        "更新配置并重启容器")
-            if [ ! -d "$HOME/infernet-container-starter/deploy" ]; then
-                error "部署目录缺失，请先执行「全新部署」"
-            fi
-            update_config_and_restart=true && skip_to_deploy=false && full_deploy=false
-            break
-            ;;
-        "退出")
-            warn "脚本已退出，未做任何更改"
-            exit 0
-            ;;
-    esac
-done
 
 echo "[9/15] 🧠 开始部署..." | tee -a "$log_file"
 
