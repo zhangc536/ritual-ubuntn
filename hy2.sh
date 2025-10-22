@@ -171,7 +171,7 @@ PY
 fi
 chmod 644 "${SUB_DIR}/${SUB_B64}"
 
-# Clash YAML（兼容字段）
+# Clash YAML（完整兼容字段）
 CLASH_PATH="${SUB_DIR}/${SUB_CLASH}"
 cat >"${CLASH_PATH}" <<EOF
 # Auto-generated Clash subscription (single hysteria node)
@@ -189,6 +189,8 @@ proxies:
     skip-cert-verify: false
     skip_cert_verify: false
     udp: true
+    up: "30 Mbps"
+    down: "200 Mbps"
 
 proxy-groups:
   - name: "Auto"
