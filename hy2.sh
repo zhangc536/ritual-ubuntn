@@ -150,11 +150,11 @@ info "跳过 ufw 配置（UFW_DISABLE=1）"
 else
 info "配置 ufw 放行端口..."
 
-# 使用 timeout 防止 ufw 阻塞
-timeout 5s ufw --force allow 22/tcp >/dev/null 2>&1 || true
-timeout 5s ufw --force allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
-timeout 5s ufw --force allow 80/tcp >/dev/null 2>&1 || true
-timeout 5s ufw --force allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
+# 使用 timeout 防止 ufw 阻塞（注意：--force 仅用于 enable/reset，不用于 allow）
+timeout 5s ufw allow 22/tcp >/dev/null 2>&1 || true
+timeout 5s ufw allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
+timeout 5s ufw allow 80/tcp >/dev/null 2>&1 || true
+timeout 5s ufw allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
 timeout 5s ufw --force enable >/dev/null 2>&1 || true
 fi
 
