@@ -110,6 +110,7 @@ SVC
 # 8) 防火墙（UFW）
 if command -v ufw >/dev/null 2>&1; then
   sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw || true
+  ufw allow 22/tcp || true  # 允许SSH连接
   ufw allow ${HY2_PORT}/udp || true
   ufw allow 80/tcp || true
   yes | ufw enable >/dev/null 2>&1 || true
