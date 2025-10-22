@@ -19,6 +19,9 @@ SUB_B64="subscription.b64"               # Base64 单行
 SUB_CLASH="subscription_clash.yml"       # Clash YAML 订阅文件名
 # ---------------------------------------------------------
 
+# 防火墙控制
+UFW_DISABLE="${UFW_DISABLE:-0}"          # 1 跳过所有 ufw 操作；0 正常执行
+
 # 简单输出函数
 info(){ printf "\e[34m[INFO]\e[0m %s\n" "$*"; }
 warn(){ printf "\e[33m[WARN]\e[0m %s\n" "$*"; }
@@ -141,13 +144,19 @@ systemctl enable --now hysteria-server
 sleep 1
 info "hysteria-server 已启动（systemd）"
 
-# 8) 防火墙（简单放行）
+# 8) 防火墙（简单放行，带跳过与超时保护）
+if [ "${UFW_DISABLE}" = "1" ]; then
+info "跳过 ufw 配置（UFW_DISABLE=1）"
+else
 info "配置 ufw 放行端口..."
-ufw --force allow 22/tcp >/dev/null 2>&1 || true
-ufw --force allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
-ufw --force allow 80/tcp >/dev/null 2>&1 || true
-ufw --force allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true
+
+# 使用 timeout 防止 ufw 阻塞
+timeout 5s ufw --force allow 22/tcp >/dev/null 2>&1 || true
+timeout 5s ufw --force allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
+timeout 5s ufw --force allow 80/tcp >/dev/null 2>&1 || true
+timeout 5s ufw --force allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
+timeout 5s ufw --force enable >/dev/null 2>&1 || true
+fi
 
 # 9) 构造 hysteria2:// 单行 URI（备份）
 # 用简单 URL 编码处理密码与名字（避免特殊字符问题）
