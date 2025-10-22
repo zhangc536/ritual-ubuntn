@@ -159,10 +159,7 @@ fi
 # 9) 构造 hysteria2:// 单行 URI（备份）
 # 用简单 URL 编码处理密码与名字（避免特殊字符问题）
 url_encode() {
-  python3 - <<PY
-import sys, urllib.parse
-print(urllib.parse.quote(sys.argv[1], safe=''))
-PY
+  python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
 }
 PASS_ENC="$(url_encode "${HY2_PASS}")"
 OBFS_ENC="$(url_encode "${OBFS_PASS}")"
