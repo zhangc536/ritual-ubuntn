@@ -141,31 +141,13 @@ systemctl enable --now hysteria-server
 sleep 1
 info "hysteria-server 已启动（systemd）"
 
-# 8) 防火墙（若有 ufw）
-if command -v ufw >/dev/null 2>&1; then
-  info "配置 ufw 放行端口..."
-  
-  # 设置 ufw 为非交互模式
-  export UFW_FORCE_YES=1
-  
-  # 配置端口规则
-  ufw --force allow 22/tcp >/dev/null 2>&1 || true
-  ufw --force allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
-  ufw --force allow 80/tcp >/dev/null 2>&1 || true
-  if [ "${SUB_ENABLE}" != "0" ]; then
-    ufw --force allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
-  fi
-  
-  # 检查并启用 ufw（如果尚未启用）
-  if ! ufw status | grep -q "Status: active" 2>/dev/null; then
-    info "启用 ufw 防火墙..."
-    ufw --force enable >/dev/null 2>&1 || warn "启用 ufw 失败，请手动检查防火墙配置"
-  else
-    info "ufw 防火墙已启用"
-  fi
-else
-  warn "未检测到 ufw，跳过防火墙配置"
-fi
+# 8) 防火墙（简单放行）
+info "配置 ufw 放行端口..."
+ufw --force allow 22/tcp >/dev/null 2>&1 || true
+ufw --force allow "${HY2_PORT}"/udp >/dev/null 2>&1 || true
+ufw --force allow 80/tcp >/dev/null 2>&1 || true
+ufw --force allow "${SUB_PORT}"/tcp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
 
 # 9) 构造 hysteria2:// 单行 URI（备份）
 # 用简单 URL 编码处理密码与名字（避免特殊字符问题）
