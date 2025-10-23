@@ -1,14 +1,13 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 # ===== 可改参数 =====
-HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
-HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
-OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
-NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
-PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
+HY2_PORT="${HY2_PORT:-8443}"
+HY2_PASS="${HY2_PASS:-}"
+OBFS_PASS="${OBFS_PASS:-}"
+NAME_TAG="${NAME_TAG:-MyHysteria}"
+PIN_SHA256="${PIN_SHA256:-}"
 
-# Clash订阅路径与nginx目录
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
 HTTP_PORT="${HTTP_PORT:-8080}"
@@ -24,11 +23,11 @@ echo "[OK] 使用 IP: ${SELECTED_IP}"
 # 1) 安装依赖
 # ===========================
 export DEBIAN_FRONTEND=noninteractive
-pkgs=(curl jq openssl python3 nginx)
-for b in "${pkgs[@]}"; do
+pkgs="curl jq openssl python3 nginx"
+for b in $pkgs; do
     if ! command -v "$b" >/dev/null 2>&1; then
         apt-get update -y
-        apt-get install -y "${pkgs[@]}"
+        apt-get install -y $pkgs
         break
     fi
 done
@@ -36,13 +35,13 @@ done
 # ===========================
 # 2) 自动生成域名（sslip.io 优先）
 # ===========================
-IP_DASH="${SELECTED_IP//./-}"
+IP_DASH=$(echo "$SELECTED_IP" | tr '.' '-')
 HY2_DOMAIN="${IP_DASH}.sslip.io"
 
-RES_A="$(getent ahostsv4 "$HY2_DOMAIN" | awk '{print $1}' | head -n1 || true)"
+RES_A=$(getent ahostsv4 "$HY2_DOMAIN" | awk '{print $1}' | head -n1 || true)
 if [ "$RES_A" != "$SELECTED_IP" ] || [ -z "$RES_A" ]; then
     ALT="${IP_DASH}.nip.io"
-    RES2="$(getent ahostsv4 "$ALT" | awk '{print $1}' | head -n1 || true)"
+    RES2=$(getent ahostsv4 "$ALT" | awk '{print $1}' | head -n1 || true)
     if [ "$RES2" = "$SELECTED_IP" ]; then
         HY2_DOMAIN="$ALT"
     else
@@ -63,7 +62,7 @@ if ! command -v hysteria >/dev/null 2>&1; then
         aarch64|arm64) asset="hysteria-linux-arm64" ;;
         *) asset="hysteria-linux-amd64" ;;
     esac
-    ver="$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r '.tag_name')"
+    ver=$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r '.tag_name')
     curl -fL "https://github.com/apernet/hysteria/releases/download/${ver}/${asset}" -o /usr/local/bin/hysteria
     chmod +x /usr/local/bin/hysteria
 fi
@@ -71,13 +70,13 @@ fi
 # ===========================
 # 4) 生成密码
 # ===========================
-[[ -n "$HY2_PASS"  ]] || HY2_PASS="$(openssl rand -hex 16)"
-[[ -n "$OBFS_PASS"  ]] || OBFS_PASS="$(openssl rand -hex 8)"
+[ -n "$HY2_PASS" ] || HY2_PASS=$(openssl rand -hex 16)
+[ -n "$OBFS_PASS" ] || OBFS_PASS=$(openssl rand -hex 8)
 
 # ===========================
-# 5) 写 Hysteria2 配置（使用 ACME HTTP-01）
+# 5) 写 Hysteria2 配置（ACME HTTP-01）
 # ===========================
-install -d -m 755 /etc/hysteria
+mkdir -p /etc/hysteria
 cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
 
@@ -139,15 +138,10 @@ ss -lunp | grep -E ":${HY2_PORT}\b" || true
 # ===========================
 # 8) 构造节点 URL
 # ===========================
-enc() { python3 - <<'PY' "$1"
-import sys, urllib.parse as u
-print(u.quote(sys.argv[1], safe=''))
-PY
-}
-PASS_ENC="$(enc "$HY2_PASS")"
-OBFS_ENC="$(enc "$OBFS_PASS")"
-NAME_ENC="$(enc "$NAME_TAG")"
-PIN_ENC="$(enc "$PIN_SHA256")"
+PASS_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$HY2_PASS''', safe=''))")
+OBFS_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$OBFS_PASS''', safe=''))")
+NAME_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$NAME_TAG''', safe=''))")
+PIN_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$PIN_SHA256''', safe=''))")
 
 URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
