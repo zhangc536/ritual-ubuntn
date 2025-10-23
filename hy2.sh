@@ -23,7 +23,7 @@ fi
 echo "[OK] 使用 IP: ${SELECTED_IP}"
 
 # ===========================
-# 1) 安装依赖
+# 1) 安装依赖（如缺失）
 # ===========================
 export DEBIAN_FRONTEND=noninteractive
 pkgs=(curl jq openssl python3 nginx)
@@ -40,11 +40,10 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 生成域名（sslip.io 优先 -> nip.io -> FAIL）
+# 2) 生成域名（sslip.io 优先）
 # ===========================
 IP_DASH="${SELECTED_IP//./-}"
 HY2_DOMAIN="${IP_DASH}.sslip.io"
-
 RES_A="$(getent ahostsv4 "$HY2_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
 if [ -z "$RES_A" ] || [ "$RES_A" != "$SELECTED_IP" ]; then
   ALT="${IP_DASH}.nip.io"
@@ -52,13 +51,11 @@ if [ -z "$RES_A" ] || [ "$RES_A" != "$SELECTED_IP" ]; then
   if [ -n "$RES2" ] && [ "$RES2" = "$SELECTED_IP" ]; then
     HY2_DOMAIN="$ALT"
   else
-    echo "[ERR] sslip.io / nip.io 均未解析到本机 IP（${SELECTED_IP}）。"
-    echo "       ACME HTTP-01 需要域名解析到本机并保证 80/tcp 可达。"
-    echo "       请在 DNS 或环境调整后重试。脚本退出。"
-    exit 1
+    echo "[WARN] sslip.io / nip.io 未解析到该 IP（${SELECTED_IP}）。"
+    echo "       脚本将继续，但若想用 ACME HTTP-01 请确保域名解析到本机且 80/tcp 可达。"
   fi
 fi
-echo "[OK] 使用域名：${HY2_DOMAIN} -> ${SELECTED_IP}"
+echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 
 # ===========================
 # 3) 安装 hysteria 二进制（若不存在）
@@ -77,7 +74,7 @@ if ! command -v hysteria >/dev/null 2>&1; then
 fi
 
 # ===========================
-# 4) 生成密码（若未提供）
+# 4) 密码生成（若未提供）
 # ===========================
 if [ -z "${HY2_PASS}" ]; then
   HY2_PASS="$(openssl rand -hex 16)"
@@ -87,10 +84,55 @@ if [ -z "${OBFS_PASS}" ]; then
 fi
 
 # ===========================
-# 5) 写 Hysteria2 配置（ACME HTTP-01）
+# 5) 检查 /acme 下所有子目录证书
+# ===========================
+USE_EXISTING_CERT=0
+USE_CERT_PATH=""
+USE_KEY_PATH=""
+ACME_BASE="/acme"
+
+if [ -d "$ACME_BASE" ]; then
+  while IFS= read -r -d '' cert_dir; do
+    FULLCHAIN="${cert_dir}/fullchain.pem"
+    PRIVKEY="${cert_dir}/privkey.pem"
+    if [ -f "$FULLCHAIN" ] && [ -f "$PRIVKEY" ]; then
+      USE_EXISTING_CERT=1
+      USE_CERT_PATH="$FULLCHAIN"
+      USE_KEY_PATH="$PRIVKEY"
+      echo "[OK] 检测到证书：$FULLCHAIN"
+      break
+    fi
+  done < <(find "$ACME_BASE" -type d -print0)
+fi
+
+if [ "$USE_EXISTING_CERT" -eq 0 ]; then
+  echo "[INFO] /acme 目录下未找到可用证书，将尝试 ACME HTTP-01"
+fi
+
+# ===========================
+# 6) 写 Hysteria2 配置
 # ===========================
 mkdir -p /etc/hysteria
-cat >/etc/hysteria/config.yaml <<EOF
+if [ "$USE_EXISTING_CERT" -eq 1 ]; then
+  cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+  echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
+else
+  cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
 
 auth:
@@ -108,9 +150,11 @@ acme:
   disable_http_challenge: false
   disable_tlsalpn_challenge: true
 EOF
+  echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
+fi
 
 # ===========================
-# 6) systemd 服务： hysteria-server
+# 7) systemd 服务 hysteria-server
 # ===========================
 cat >/etc/systemd/system/hysteria-server.service <<'SVC'
 [Unit]
@@ -134,145 +178,42 @@ systemctl enable --now hysteria-server
 sleep 3
 
 # ===========================
-# 7) 等待并检查 ACME 证书是否完成
+# 8) 等待 ACME 完成（如果没有现有证书）
 # ===========================
-echo "[*] 等待 hysteria 完成 ACME HTTP-01 验证（最多 60 秒）..."
-TRIES=0
-ACME_OK=0
-while [ $TRIES -lt 12 ]; do
-  # 检查 systemd 日志里是否出现 acme 相关成功信息
-  if journalctl -u hysteria-server --no-pager -n 200 | grep -iq "acme"; then
-    ACME_OK=1
-    break
-  fi
-  sleep 5
-  TRIES=$((TRIES+1))
-done
+if [ "$USE_EXISTING_CERT" -eq 0 ]; then
+  echo "[*] 等待 hysteria 完成 ACME HTTP-01 验证（最多 60 秒）..."
+  TRIES=0
+  ACME_OK=0
+  while [ $TRIES -lt 12 ]; do
+    if journalctl -u hysteria-server --no-pager -n 200 | grep -iq "acme"; then
+      ACME_OK=1
+      break
+    fi
+    sleep 5
+    TRIES=$((TRIES+1))
+  done
 
-if [ "$ACME_OK" -ne 1 ]; then
-  echo "[ERR] ACME HTTP-01 证书申请未检测到成功记录。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 可达。"
-  echo "      hysteria 日志预览："
-  journalctl -u hysteria-server -n 100 --no-pager || true
-  exit 1
+  if [ "$ACME_OK" -ne 1 ]; then
+    echo "[ERR] ACME HTTP-01 证书申请未检测到成功记录。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 可达。"
+    journalctl -u hysteria-server -n 100 --no-pager || true
+    exit 1
+  fi
+  echo "[OK] ACME 证书申请成功"
+else
+  echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
 fi
-echo "[OK] ACME 证书（或相关 acme 日志）已检测到"
 
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
 
 # ===========================
-# 8) 构造 hysteria2 URI（URL 编码关键字段）
+# 9) 构造 hysteria2 URI
 # ===========================
-PASS_ENC="$(python3 - <<PY
-import sys, urllib.parse as u
-print(u.quote(sys.argv[1], safe=''))
-PY
-" "$HY2_PASS")"
-
-OBFS_ENC="$(python3 - <<PY
-import sys, urllib.parse as u
-print(u.quote(sys.argv[1], safe=''))
-PY
-" "$OBFS_PASS")"
-
-NAME_ENC="$(python3 - <<PY
-import sys, urllib.parse as u
-print(u.quote(sys.argv[1], safe=''))
-PY
-" "$NAME_TAG")"
-
-PIN_ENC="$(python3 - <<PY
-import sys, urllib.parse as u
-print(u.quote(sys.argv[1], safe=''))
-PY
-" "$PIN_SHA256")"
+PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$HY2_PASS")"
+OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$OBFS_PASS")"
+NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$NAME_TAG")"
+PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$PIN_SHA256")"
 
 URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
 echo
-echo "=========== HY2 节点（URI） ==========="
-echo "${URI}"
-echo "======================================="
-echo
-
-# ===========================
-# 9) 生成规则模式友好 的 Clash 订阅（包含 proxy-groups、dns、rules）
-# ===========================
-mkdir -p "${CLASH_WEB_DIR}"
-cat > "${CLASH_OUT_PATH}" <<EOF
-# Auto-generated Clash subscription (rules-mode friendly)
-proxies:
-  - type: hysteria2
-    name: ${NAME_TAG}
-    server: ${SELECTED_IP}
-    port: ${HY2_PORT}
-    password: ${HY2_PASS}
-    obfs: salamander
-    obfs-password: ${OBFS_PASS}
-    sni: ${HY2_DOMAIN}
-
-proxy-groups:
-  - name: Proxy
-    type: select
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-  - name: Auto
-    type: url-test
-    url: 'http://www.gstatic.com/generate_204'
-    interval: 300
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-dns:
-  enable: true
-  listen: 0.0.0.0:53
-  enhanced-mode: fake-ip
-  default-nameserver:
-    - 223.5.5.5
-    - 1.1.1.1
-  nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.4.4/dns-query
-  fallback:
-    - https://dns.google/dns-query
-    - https://1.0.0.1/dns-query
-  use-hosts: true
-
-rules:
-  - GEOIP,CN,DIRECT
-  - MATCH,Proxy
-EOF
-
-echo "[OK] Clash 订阅已写入：${CLASH_OUT_PATH}"
-
-# ===========================
-# 10) 配置 nginx 提供订阅
-# ===========================
-cat >/etc/nginx/sites-available/clash.conf <<EOF
-server {
-    listen ${HTTP_PORT} default_server;
-    listen [::]:${HTTP_PORT} default_server;
-
-    root ${CLASH_WEB_DIR};
-
-    location /clash_subscription.yaml {
-        default_type application/x-yaml;
-        try_files /clash_subscription.yaml =404;
-    }
-
-    access_log /var/log/nginx/clash_access.log;
-    error_log /var/log/nginx/clash_error.log;
-}
-EOF
-
-ln -sf /etc/nginx/sites-available/clash.conf /etc/nginx/sites-enabled/clash.conf
-nginx -t
-systemctl restart nginx
-
-echo "[OK] Clash 订阅通过 nginx 提供："
-echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
-echo
-echo "提示：首次或续期 ACME 证书仍需 80/tcp 外网可达"
