@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Modified installer: HY2 (Hysteria2) on IPv4-only VPS
-# Keeps original behavior but emits Clash-compatible UDP subscription files.
+# HY2 (Hysteria2) on IPv4-only VPS WITHOUT own domain & WITHOUT email
+# 使用 UDP，生成可用 Clash Hysteria2 订阅
 set -euo pipefail
 
-# ===== 可改参数（也可用环境变量覆盖）=====
+# ===== 可改参数（也可用环境变量覆盖） =====
 HY2_PORT="${HY2_PORT:-8443}"          # HY2 监听的 UDP 端口
 HY2_PASS="${HY2_PASS:-}"              # 认证密码（留空自动生成）
 OBFS_PASS="${OBFS_PASS:-}"            # salamander 混淆密码（留空自动生成）
 NAME_TAG="${NAME_TAG:-MyHysteria}"    # URL 末尾 #名称
 PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
+
 # 订阅发布（可选）
 SUB_ENABLE="${SUB_ENABLE:-1}"          # 1 启用内置 HTTP 订阅发布；0 仅生成本地文件
 SUB_PORT="${SUB_PORT:-8080}"           # 订阅 HTTP 端口
 SUB_DIR="${SUB_DIR:-/etc/hysteria}"    # 订阅/配置目录
 SUB_PLAIN="${SUB_PLAIN:-subscription.txt}"
 SUB_B64="${SUB_B64:-subscription.b64}"
-SUB_CLASH="${SUB_CLASH:-subscription_clash.yaml}"
-# =====================================
+SUB_CLASH="${SUB_CLASH:-subscription_clash.yml}"
+# =========================================
 
 # 0) 必须有公网 IPv4
 IPV4="$(ip -4 addr show scope global | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1 || true)"
@@ -90,7 +91,6 @@ obfs:
 acme:
   domains:
     - ${HY2_DOMAIN}
-  # HTTP-01：Hysteria 会临时监听 80/tcp 完成验证
   disable_http_challenge: false
   disable_tlsalpn_challenge: true
 EOF
@@ -130,7 +130,7 @@ sleep 1
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
 
-# 10) 构造节点（无 up/down；敏感字段 URL 编码）
+# 10) 构造节点（单行 URI & Clash YAML）
 enc() { python3 - <<'PY' "$1"
 import sys, urllib.parse as u
 print(u.quote(sys.argv[1], safe=''))
@@ -139,26 +139,22 @@ PY
 PASS_ENC="$(enc "$HY2_PASS")"
 OBFS_ENC="$(enc "$OBFS_PASS")"
 NAME_ENC="$(enc "$NAME_TAG")"
-PIN_ENC="$(enc "$PIN_SHA256")"  # 可为空
+PIN_ENC="$(enc "$PIN_SHA256")"
 
-# 输出为：hysteria2://<pass>@<host>:<port>/?protocol=udp&obfs=salamander&obfs-password=<>&sni=<>&insecure=0&pinSHA256=<>#Name
+# hysteria2 URI
 URI="hysteria2://${PASS_ENC}@${HY2_DOMAIN}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
 echo
-echo "=========== HY2 节点（无邮箱/无 up/down） ==========="
+echo "=========== HY2 单行节点 URI ==========="
 echo "${URI}"
-echo "==================================================="
-echo
+echo "======================================="
 
-# ----------------------------
-# 追加：生成 Clash 兼容订阅（针对 UDP 节点）
-# ----------------------------
+# 11) 生成订阅文件
 install -d -m 755 "${SUB_DIR}"
-# 单行 URI
 printf '%s\n' "${URI}" > "${SUB_DIR}/${SUB_PLAIN}"
 chmod 644 "${SUB_DIR}/${SUB_PLAIN}"
 
-# Base64 单行（兼容大多数环境）
+# base64（单行）
 if base64 --help >/dev/null 2>&1 && base64 -w 0 </dev/null >/dev/null 2>&1; then
   base64 -w 0 "${SUB_DIR}/${SUB_PLAIN}" > "${SUB_DIR}/${SUB_B64}"
 else
@@ -169,22 +165,19 @@ PY
 fi
 chmod 644 "${SUB_DIR}/${SUB_B64}"
 
-# Clash YAML：严格保留 Clash 所需字段（用于 UDP）
-# 注意：字段名必须精确，布尔不要加引号
+# Clash YAML
 CLASH_PATH="${SUB_DIR}/${SUB_CLASH}"
 cat >"${CLASH_PATH}" <<EOF
+# Auto-generated Clash subscription (single Hysteria2 node)
 proxies:
-  - name: "${NAME_TAG}"
-    type: hysteria
+  - type: hysteria2
+    name: "${NAME_TAG}"
     server: "${HY2_DOMAIN}"
     port: ${HY2_PORT}
     password: "${HY2_PASS}"
-    obfs: "salamander"
+    obfs: salamander
     obfs-password: "${OBFS_PASS}"
-    protocol: udp
-    udp: true
     sni: "${HY2_DOMAIN}"
-    skip-cert-verify: false
 
 proxy-groups:
   - name: "Auto"
@@ -196,11 +189,11 @@ proxy-providers: {}
 EOF
 chmod 644 "${CLASH_PATH}"
 
-# 12) 可选：暴露 HTTP 订阅目录（保留简单 http.server）
-if [ "${SUB_ENABLE:-1}" = "1" ]; then
+# 12) 可选 HTTP 发布
+if [ "${SUB_ENABLE}" = "1" ]; then
   cat >/etc/systemd/system/hysteria-sub.service <<SVC
 [Unit]
-Description=Simple HTTP server to serve Hysteria subscription files
+Description=HTTP server to serve Hysteria subscription files
 After=network.target
 
 [Service]
@@ -216,21 +209,9 @@ SVC
   systemctl enable --now hysteria-sub.service || true
 fi
 
-echo "=========== Clash 订阅链接（可直接导入） ==========="
-if [ "${SUB_ENABLE:-1}" = "1" ]; then
-  echo "Clash YAML 订阅："
-  echo "  http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_CLASH}"
-  echo
-  echo "其他格式订阅："
-  echo "  单行 URI：http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_PLAIN}"
-  echo "  Base64：  http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_B64}"
-  echo
-else
-  echo "订阅文件已生成本地（HTTP 服务未启用）："
-  echo "  Clash YAML：${CLASH_PATH}"
-  echo "  单行 URI：  ${SUB_DIR}/${SUB_PLAIN}"
-  echo "  Base64：    ${SUB_DIR}/${SUB_B64}"
-fi
-echo "=================================================="
 echo
-echo "提示：首次与续期均需 80/tcp 外网可达（HTTP-01）。"
+echo "Clash YAML 订阅： http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_CLASH}"
+echo "单行 URI：     http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_PLAIN}"
+echo "Base64：       http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_B64}"
+echo
+echo "提示：首次与续期均需 80/tcp 外网可达（HTTP-01）"
