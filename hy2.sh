@@ -2,22 +2,26 @@
 set -euo pipefail
 
 # ===== 可改参数 =====
-HY2_PORT="${HY2_PORT:-8443}"
-HY2_PASS="${HY2_PASS:-}"
-OBFS_PASS="${OBFS_PASS:-}"
-NAME_TAG="${NAME_TAG:-MyHysteria}"
-PIN_SHA256="${PIN_SHA256:-}"
+HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
+HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
+OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
+NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
+PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
 
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 
+# ===========================
 # 0) 公网 IPv4
+# ===========================
 SELECTED_IP="$(ip -4 addr show scope global | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1 || true)"
 [ -n "$SELECTED_IP" ] || { echo "[ERR] 未检测到公网 IPv4"; exit 1; }
 echo "[OK] 使用 IP: ${SELECTED_IP}"
 
+# ===========================
 # 1) 安装依赖
+# ===========================
 export DEBIAN_FRONTEND=noninteractive
 pkgs=(curl jq openssl python3 nginx)
 for b in "${pkgs[@]}"; do
@@ -28,7 +32,9 @@ for b in "${pkgs[@]}"; do
     fi
 done
 
-# 2) 自动生成域名
+# ===========================
+# 2) 自动生成域名（sslip.io 优先）
+# ===========================
 IP_DASH="${SELECTED_IP//./-}"
 HY2_DOMAIN="${IP_DASH}.sslip.io"
 RES_A="$(getent ahostsv4 "$HY2_DOMAIN" | awk '{print $1}' | head -n1 || true)"
@@ -44,7 +50,9 @@ if [ "$RES_A" != "$SELECTED_IP" ] || [ -z "$RES_A" ]; then
 fi
 echo "[OK] 使用域名/IP：${HY2_DOMAIN} (实际 IP -> ${SELECTED_IP})"
 
+# ===========================
 # 3) 安装 Hysteria2
+# ===========================
 if ! command -v hysteria >/dev/null 2>&1; then
     echo "[*] 安装 Hysteria2 ..."
     arch="$(uname -m)"
@@ -58,11 +66,15 @@ if ! command -v hysteria >/dev/null 2>&1; then
     chmod +x /usr/local/bin/hysteria
 fi
 
+# ===========================
 # 4) 密码生成
+# ===========================
 [[ -n "$HY2_PASS" ]] || HY2_PASS="$(openssl rand -hex 16)"
 [[ -n "$OBFS_PASS" ]] || OBFS_PASS="$(openssl rand -hex 8)"
 
-# 5) Hysteria2 配置
+# ===========================
+# 5) 写 Hysteria2 配置
+# ===========================
 mkdir -p /etc/hysteria
 cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
@@ -83,7 +95,9 @@ acme:
   disable_tlsalpn_challenge: true
 EOF
 
+# ===========================
 # 6) systemd 服务
+# ===========================
 cat >/etc/systemd/system/hysteria-server.service <<'SVC'
 [Unit]
 Description=Hysteria Server (config.yaml)
@@ -105,7 +119,9 @@ systemctl daemon-reload
 systemctl enable --now hysteria-server
 sleep 2
 
+# ===========================
 # 7) ACME 检查
+# ===========================
 ACME_OK=true
 systemctl status hysteria-server | grep -iq "acme" || ACME_OK=false
 if ! $ACME_OK ; then
@@ -114,7 +130,9 @@ if ! $ACME_OK ; then
 fi
 echo "[OK] ACME 证书申请成功"
 
+# ===========================
 # 8) 节点 URL
+# ===========================
 PASS_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$HY2_PASS''', safe=''))")
 OBFS_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$OBFS_PASS''', safe=''))")
 NAME_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$NAME_TAG''', safe=''))")
@@ -128,7 +146,9 @@ echo "${URI}"
 echo "================================"
 echo
 
-# 9) Clash YAML
+# ===========================
+# 9) 生成 Clash YAML
+# ===========================
 mkdir -p "$CLASH_WEB_DIR"
 cat > "$CLASH_OUT_PATH" <<EOF
 proxies:
@@ -142,7 +162,9 @@ proxies:
     sni: ${HY2_DOMAIN}
 EOF
 
+# ===========================
 # 10) nginx 提供订阅
+# ===========================
 cat >/etc/nginx/sites-available/clash.conf <<EOF
 server {
     listen ${HTTP_PORT} default_server;
