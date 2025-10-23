@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # ===== 可改参数 =====
 HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
 HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
@@ -190,3 +188,4 @@ echo "[OK] Clash 订阅已生成并可通过 nginx 访问："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo
 echo "提示：首次或续期 ACME 证书仍需 80/tcp 外网可达"
+
