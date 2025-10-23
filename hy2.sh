@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
-# 一键安装 Hysteria2 + Clash 可用订阅
+# HY2 (Hysteria2) on IPv4-only VPS WITHOUT own domain & WITHOUT email
+# Uses <IP>.sslip.io (fallback: <IP>.nip.io) + ACME HTTP-01 (needs TCP/80 reachable).
+# Prints a single hysteria2:// node and generates Clash-compatible subscription.
+
 set -euo pipefail
 
-# ===== 配置参数（可用环境变量覆盖） =====
-HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP 端口
-HY2_PASS="${HY2_PASS:-}"              # Hysteria密码
-OBFS_PASS="${OBFS_PASS:-}"            # Salamander混淆密码
-NAME_TAG="${NAME_TAG:-MyHysteria}"    # Clash订阅节点名称
-SUB_ENABLE="${SUB_ENABLE:-1}"         # 是否启用HTTP订阅服务
-SUB_PORT="${SUB_PORT:-8080}"          # HTTP订阅端口
-SUB_DIR="${SUB_DIR:-/etc/hysteria}"   # 订阅目录
+# ===== 可改参数（也可用环境变量覆盖） =====
+HY2_PORT="${HY2_PORT:-8443}"          # HY2 监听的 UDP 端口
+HY2_PASS="${HY2_PASS:-}"              # 认证密码（留空自动生成）
+OBFS_PASS="${OBFS_PASS:-}"            # salamander 混淆密码（留空自动生成）
+NAME_TAG="${NAME_TAG:-MyHysteria}"    # URL 末尾 #名称
+PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
+
+# 订阅发布（可选）
+SUB_ENABLE="${SUB_ENABLE:-1}"          # 1 启用 HTTP 订阅；0 仅生成本地文件
+SUB_PORT="${SUB_PORT:-8080}"           # 订阅 HTTP 端口
+SUB_DIR="${SUB_DIR:-/etc/hysteria}"    # 订阅/配置目录
 SUB_PLAIN="${SUB_PLAIN:-subscription.txt}"
 SUB_B64="${SUB_B64:-subscription.b64}"
-SUB_CLASH="${SUB_CLASH:-subscription_clash.yml}"
-# ========================================
+SUB_CLASH="${SUB_CLASH:-subscription_clash.yaml}"
+# =====================================
 
-# 1) 获取公网IPv4
-IPV4="$(ip -4 addr show scope global | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1)"
+# 0) 公网 IPv4
+IPV4="$(ip -4 addr show scope global | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1 || true)"
 [ -n "$IPV4" ] || { echo "[ERR] 未检测到公网 IPv4"; exit 1; }
-IP_DASH="${IPV4//./-}"
-HY2_DOMAIN="${IP_DASH}.sslip.io"
-echo "[OK] 使用域名：${HY2_DOMAIN} (A -> ${IPV4})"
 
-# 2) 安装依赖
+# 1) 安装依赖
 export DEBIAN_FRONTEND=noninteractive
-pkgs=(curl jq openssl python3 ufw)
+pkgs=(curl jq openssl ufw python3)
 for b in "${pkgs[@]}"; do
   if ! command -v "$b" >/dev/null 2>&1; then
     apt-get update -y
@@ -33,25 +36,47 @@ for b in "${pkgs[@]}"; do
   fi
 done
 
-# 3) 安装 Hysteria2
+# 2) 生成零配置域名
+IP_DASH="${IPV4//./-}"
+HY2_DOMAIN="${IP_DASH}.sslip.io"
+RES_A="$(getent ahostsv4 "$HY2_DOMAIN" | awk '{print $1}' | head -n1 || true)"
+if [ "$RES_A" != "$IPV4" ] || [ -z "$RES_A" ]; then
+  ALT="${IP_DASH}.nip.io"
+  RES2="$(getent ahostsv4 "$ALT" | awk '{print $1}' | head -n1 || true)"
+  if [ "$RES2" = "$IPV4" ]; then
+    HY2_DOMAIN="$ALT"
+  else
+    echo "[ERR] sslip.io / nip.io 无法解析到本机 IP；请检查 DNS/网络"
+    exit 1
+  fi
+fi
+echo "[OK] 使用域名：${HY2_DOMAIN} (A -> ${IPV4})"
+
+# 3) 检查 80 端口空闲
+if ss -ltn '( sport = :80 )' | grep -q ':80'; then
+  echo "[ERR] 80/tcp 已被占用"
+  exit 1
+fi
+
+# 4) 安装 Hysteria
 if ! command -v hysteria >/dev/null 2>&1; then
-  echo "[*] 安装 Hysteria2..."
+  echo "[*] 安装 Hysteria2 ..."
   arch="$(uname -m)"
   case "$arch" in
-    x86_64|amd64) asset="hysteria-linux-amd64";;
-    aarch64|arm64) asset="hysteria-linux-arm64";;
-    *) asset="hysteria-linux-amd64";;
+    x86_64|amd64) asset="hysteria-linux-amd64" ;;
+    aarch64|arm64) asset="hysteria-linux-arm64" ;;
+    *) asset="hysteria-linux-amd64" ;;
   esac
   ver="$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r '.tag_name')"
   curl -fL "https://github.com/apernet/hysteria/releases/download/${ver}/${asset}" -o /usr/local/bin/hysteria
   chmod +x /usr/local/bin/hysteria
 fi
 
-# 4) 生成随机密码（如果未指定）
-[[ -n "$HY2_PASS" ]] || HY2_PASS="$(openssl rand -hex 16)"
+# 5) 生成密码
+[[ -n "$HY2_PASS"  ]] || HY2_PASS="$(openssl rand -hex 16)"
 [[ -n "$OBFS_PASS" ]] || OBFS_PASS="$(openssl rand -hex 8)"
 
-# 5) 写 Hysteria2 配置
+# 6) 写 HY2 配置
 install -d -m 755 /etc/hysteria
 cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
@@ -72,10 +97,10 @@ acme:
   disable_tlsalpn_challenge: true
 EOF
 
-# 6) systemd服务
+# 7) systemd 服务
 cat >/etc/systemd/system/hysteria-server.service <<'SVC'
 [Unit]
-Description=Hysteria Server
+Description=Hysteria Server (config.yaml)
 After=network.target
 
 [Service]
@@ -90,7 +115,7 @@ RestartSec=3
 WantedBy=multi-user.target
 SVC
 
-# 7) 防火墙 UFW
+# 8) 防火墙
 if command -v ufw >/dev/null 2>&1; then
   sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw || true
   ufw allow 22
@@ -100,13 +125,15 @@ if command -v ufw >/dev/null 2>&1; then
   yes | ufw enable >/dev/null 2>&1 || true
 fi
 
-# 8) 启动 Hysteria2
+# 9) 启动
 systemctl daemon-reload
 systemctl enable --now hysteria-server
 sleep 1
-echo "[OK] Hysteria2 已启动，监听 UDP/${HY2_PORT}"
 
-# 9) 构造节点URI
+echo "=== 监听检查（UDP/${HY2_PORT}) ==="
+ss -lunp | grep -E ":${HY2_PORT}\b" || true
+
+# 10) 构造节点 URI
 enc() { python3 - <<'PY' "$1"
 import sys, urllib.parse as u
 print(u.quote(sys.argv[1], safe=''))
@@ -115,20 +142,25 @@ PY
 PASS_ENC="$(enc "$HY2_PASS")"
 OBFS_ENC="$(enc "$OBFS_PASS")"
 NAME_ENC="$(enc "$NAME_TAG")"
-URI="hysteria2://${PASS_ENC}@${HY2_DOMAIN}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0#${NAME_ENC}"
+PIN_ENC="$(enc "$PIN_SHA256")"
 
-# 10) 生成订阅文件
+URI="hysteria2://${PASS_ENC}@${HY2_DOMAIN}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+
+echo
+echo "=========== HY2 节点（无邮箱/无 up/down） ==========="
+echo "${URI}"
+echo "==================================================="
+
+# 11) 生成订阅文件
 install -d -m 755 "${SUB_DIR}"
-echo "${URI}" > "${SUB_DIR}/${SUB_PLAIN}"
-if base64 --help >/dev/null 2>&1 && base64 -w 0 </dev/null >/dev/null 2>&1; then
-  base64 -w 0 "${SUB_DIR}/${SUB_PLAIN}" > "${SUB_DIR}/${SUB_B64}"
-else
-  python3 - <<PY > "${SUB_DIR}/${SUB_B64}"
-import base64,sys
-print(base64.b64encode(open(sys.argv[1],'rb').read()).decode('ascii'), end='')
-PY
-fi
+printf '%s\n' "${URI}" > "${SUB_DIR}/${SUB_PLAIN}"
+chmod 644 "${SUB_DIR}/${SUB_PLAIN}"
 
+# Base64 单行
+base64 -w0 "${SUB_DIR}/${SUB_PLAIN}" > "${SUB_DIR}/${SUB_B64}"
+chmod 644 "${SUB_DIR}/${SUB_B64}"
+
+# Clash YAML（兼容 Hysteria Clash）
 cat >"${SUB_DIR}/${SUB_CLASH}" <<EOF
 proxies:
   - name: "${NAME_TAG}"
@@ -139,9 +171,9 @@ proxies:
     obfs: "salamander"
     obfs-password: "${OBFS_PASS}"
     protocol: "udp"
+    udp: true
     sni: "${HY2_DOMAIN}"
     skip-cert-verify: false
-    udp: true
 
 proxy-groups:
   - name: "Auto"
@@ -151,12 +183,13 @@ proxy-groups:
 
 proxy-providers: {}
 EOF
+chmod 644 "${SUB_DIR}/${SUB_CLASH}"
 
-# 11) 可选 HTTP 服务
+# 12) 可选 HTTP 订阅服务
 if [ "${SUB_ENABLE}" = "1" ]; then
   cat >/etc/systemd/system/hysteria-sub.service <<SVC
 [Unit]
-Description=Hysteria HTTP subscription
+Description=HTTP server to serve Hysteria subscription files
 After=network.target
 
 [Service]
@@ -172,10 +205,13 @@ SVC
   systemctl enable --now hysteria-sub.service || true
 fi
 
-# 12) 输出订阅信息
+# 13) 输出订阅链接
 echo
-echo "Clash YAML订阅：http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_CLASH}"
-echo "单行 URI：http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_PLAIN}"
-echo "Base64：http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_B64}"
+if [ "${SUB_ENABLE}" = "1" ]; then
+  echo "Clash YAML 订阅：http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_CLASH}"
+  echo "单行 URI：    http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_PLAIN}"
+  echo "Base64：      http://${HY2_DOMAIN}:${SUB_PORT}/${SUB_B64}"
+fi
+
 echo
 echo "提示：首次与续期均需 80/tcp 外网可达（HTTP-01）。"
