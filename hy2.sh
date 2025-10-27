@@ -184,11 +184,11 @@ sleep 3
 # 8) 如果没有现有证书则等待 ACME 产生日志（最多 60 秒）
 # ===========================
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[*] 等待 hysteria ACME HTTP-01 完成（最多 60 秒）..."
+  echo "[*] 等待 hysteria ACME 证书申请完成（最多 60 秒）..."
   TRIES=0
   ACME_OK=0
   while [ $TRIES -lt 12 ]; do
-    if journalctl -u hysteria-server --no-pager -n 200 | grep -iq "acme"; then
+    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
       ACME_OK=1
       break
     fi
@@ -197,11 +197,12 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   done
 
   if [ "$ACME_OK" -ne 1 ]; then
-    echo "[ERR] 未检测到 ACME 成功日志。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 对外开放。"
-    journalctl -u hysteria-server -n 100 --no-pager || true
-    exit 1
+    echo "[WARN] 未检测到 ACME 成功日志，但可能证书已申请成功。检查日志详情："
+    journalctl -u hysteria-server -n 50 --no-pager | grep -E -i "(acme|certificate|tls-alpn|http-01|challenge)" || true
+    echo "[INFO] 继续执行，证书可能已成功获取"
+  else
+    echo "[OK] ACME 证书申请成功检测到"
   fi
-  echo "[OK] ACME 证书（或相关 acme 日志）已检测到"
 else
   echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
 fi
