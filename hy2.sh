@@ -231,12 +231,68 @@ echo "======================================="
 echo
 
 # ===========================
-# 10) 生成更全面的规则友好 Clash 订阅（模板写入 + 安全替换）
+# 10) 生成 ACL4SSR 规则的 Clash 订阅（模板写入 + 安全替换）
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
 
 cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
-# Auto-generated comprehensive Clash subscription (rules-mode friendly)
+# ;不要随意改变关键字，否则会导致出错
+# ;acl4SSR规则
+# ;去广告：支持
+# ;自动测速：支持
+# ;微软分流：不支持
+# ;苹果分流：不支持
+# ;增强中国IP段：不支持
+# ;增强国外GFW：不支持
+# ;ruleset=🎯 全球直连,[]GEOIP,LAN
+
+mixed-port: 7890
+allow-lan: false
+mode: rule
+ipv6: false
+log-level: info
+external-controller: 0.0.0.0:9090
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  ipv6: false
+  default-nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+  nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+    - 119.29.29.29
+    - 180.76.76.76
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.localdomain"
+    - "*.example"
+    - "*.invalid"
+    - "*.localhost"
+    - "*.test"
+    - "*.local"
+    - "*.home.arpa"
+    - router.asus.com
+    - localhost.sec.qq.com
+    - localhost.ptlogin2.qq.com
+    - +.msftconnecttest.com
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - 114.114.114.114
+    - 180.76.76.76
+    - 119.29.29.29
+    - 223.5.5.5
+    - 8.8.8.8
+    - 8.8.4.4
+    - 1.1.1.1
+    - 1.0.0.1
 
 proxies:
   - type: hysteria2
@@ -249,107 +305,112 @@ proxies:
     sni: __HY2_DOMAIN__
 
 proxy-groups:
-  - name: Proxy
+  - name: 🚀 节点选择
     type: select
     proxies:
-      - __NAME_TAG__
+      - ♻️ 自动选择
       - DIRECT
-
-  - name: Auto
+      - __NAME_TAG__
+  - name: ♻️ 自动选择
     type: url-test
-    url: 'http://www.gstatic.com/generate_204'
-    interval: 180
     proxies:
       - __NAME_TAG__
-      - DIRECT
-
-  - name: Stream
+    url: `http://www.gstatic.com/generate_204` 
+    interval: 300
+  - name: 🎯 全球直连
     type: select
     proxies:
-      - __NAME_TAG__
       - DIRECT
-
-  - name: Game
+      - 🚀 节点选择
+      - ♻️ 自动选择
+  - name: 🛑 全球拦截
     type: select
     proxies:
-      - __NAME_TAG__
+      - REJECT
       - DIRECT
-
-  - name: VoIP
+  - name: 🐟 漏网之鱼
     type: select
     proxies:
+      - 🚀 节点选择
+      - 🎯 全球直连
+      - ♻️ 自动选择
       - __NAME_TAG__
-      - DIRECT
 
-dns:
-  enable: true
-  listen: 0.0.0.0:53
-  enhanced-mode: fake-ip
-  default-nameserver:
-    - 223.5.5.5
-    - 1.1.1.1
-  nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
-  fallback:
-    - https://dns.google/dns-query
-    - https://1.0.0.1/dns-query
-  use-hosts: true
+rule-providers:
+  LocalAreaNetwork:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list` 
+    path: ./rules/providers/LocalAreaNetwork.list
+    interval: 86400
+  BanAD:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list` 
+    path: ./rules/providers/BanAD.list
+    interval: 86400
+  BanProgramAD:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list` 
+    path: ./rules/providers/BanProgramAD.list
+    interval: 86400
+  GoogleCN:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list` 
+    path: ./rules/providers/GoogleCN.list
+    interval: 86400
+  SteamCN:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list` 
+    path: ./rules/providers/SteamCN.list
+    interval: 86400
+  Telegram:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list` 
+    path: ./rules/providers/Telegram.list
+    interval: 86400
+  ProxyMedia:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list` 
+    path: ./rules/providers/ProxyMedia.list
+    interval: 86400
+  ProxyLite:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list` 
+    path: ./rules/providers/ProxyLite.list
+    interval: 86400
+  ChinaDomain:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list` 
+    path: ./rules/providers/ChinaDomain.list
+    interval: 86400
+  ChinaCompanyIp:
+    type: http
+    behavior: classical
+    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list` 
+    path: ./rules/providers/ChinaCompanyIp.list
+    interval: 86400
 
 rules:
-  - IP-CIDR,10.0.0.0/8,DIRECT
-  - IP-CIDR,172.16.0.0/12,DIRECT
-  - IP-CIDR,192.168.0.0/16,DIRECT
-  - IP-CIDR,127.0.0.0/8,DIRECT
-  - IP-CIDR,169.254.0.0/16,DIRECT
-
-  - DOMAIN-SUFFIX,local,DIRECT
-  - DOMAIN-SUFFIX,localhost,DIRECT
-
-  - DOMAIN-SUFFIX,baidu.com,DIRECT
-  - DOMAIN-SUFFIX,qq.com,DIRECT
-  - DOMAIN-SUFFIX,taobao.com,DIRECT
-  - DOMAIN-SUFFIX,tmall.com,DIRECT
-  - DOMAIN-SUFFIX,tencent.com,DIRECT
-  - DOMAIN-SUFFIX,alipay.com,DIRECT
-  - DOMAIN-SUFFIX,aliyun.com,DIRECT
-  - DOMAIN-SUFFIX,iqiyi.com,DIRECT
-  - DOMAIN-SUFFIX,youku.com,DIRECT
-
-  - DOMAIN-KEYWORD,netflix,Stream
-  - DOMAIN-KEYWORD,disney,Stream
-  - DOMAIN-KEYWORD,hulu,Stream
-  - DOMAIN-KEYWORD,primevideo,Stream
-  - DOMAIN-KEYWORD,youtube,Stream
-  - DOMAIN-KEYWORD,twitch,Stream
-  - DOMAIN-KEYWORD,spotify,Stream
-  - MATCH,Stream
-
-  - DOMAIN-SUFFIX,steamcommunity.com,Game
-  - DOMAIN-SUFFIX,steampowered.com,Game
-  - DOMAIN-SUFFIX,epicgames.com,Game
-  - DOMAIN-KEYWORD,playstation,Game
-  - DOMAIN-KEYWORD,xbox,Game
-  - DOMAIN-KEYWORD,nintendo,Game
-
-  - DOMAIN-KEYWORD,zoom,VoIP
-  - DOMAIN-KEYWORD,skype,VoIP
-  - DOMAIN-KEYWORD,discord,VoIP
-  - DOMAIN-KEYWORD,teams,VoIP
-
-  - DOMAIN-KEYWORD,bank,DIRECT
-  - DOMAIN-KEYWORD,finance,DIRECT
-
-  - DOMAIN-KEYWORD,facebook,Proxy
-  - DOMAIN-KEYWORD,instagram,Proxy
-  - DOMAIN-KEYWORD,twitter,Proxy
-  - DOMAIN-KEYWORD,wechat,DIRECT
-  - DOMAIN-KEYWORD,telegram,Proxy
-  - DOMAIN-KEYWORD,whatsapp,Proxy
-
-  - GEOIP,CN,DIRECT
-
-  - MATCH,Proxy
+  - RULE-SET,LocalAreaNetwork,🎯 全球直连
+  - RULE-SET,BanAD,🛑 全球拦截
+  - RULE-SET,BanProgramAD,🛑 全球拦截
+  - RULE-SET,GoogleCN,🎯 全球直连
+  - RULE-SET,SteamCN,🎯 全球直连
+  - RULE-SET,Telegram,🚀 节点选择
+  - RULE-Set,ProxyMedia,🚀 节点选择
+  - RULE-SET,ProxyLite,🚀 节点选择
+  - RULE-SET,ChinaDomain,🎯 全球直连
+  - RULE-SET,ChinaCompanyIp,🎯 全球直连
+  - GEOIP,CN,🎯 全球直连
+  - MATCH,🐟 漏网之鱼
 EOF
 
 # perform safe substitutions
