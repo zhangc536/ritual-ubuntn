@@ -2,15 +2,21 @@
 set -euo pipefail
 
 # ===== 可改参数 =====
-HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
-HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
-OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
-NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
-PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
+HY2_PORT="${HY2_PORT:-8443}"
+HY2_PASS="${HY2_PASS:-}"
+OBFS_PASS="${OBFS_PASS:-}"
+NAME_TAG="${NAME_TAG:-MyHysteria}"
+PIN_SHA256="${PIN_SHA256:-}"   # 可以留空
 
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
 HTTP_PORT="${HTTP_PORT:-8080}"
+
+# ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
+escape_for_sed() {
+  # read input as $1
+  printf '%s' "$1" | sed -e 's/[\/&@]/\\&/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+}
 
 # ===========================
 # 0) 获取公网 IPv4
@@ -37,7 +43,7 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 生成域名（sslip.io 优先）
+# 2) 生成域名（sslip.io 优先 -> nip.io -> warn）
 # ===========================
 IP_DASH="${SELECTED_IP//./-}"
 HY2_DOMAIN="${IP_DASH}.sslip.io"
@@ -59,7 +65,6 @@ echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 # ===========================
 if ! command -v hysteria >/dev/null 2>&1; then
   echo "[*] 安装 hysteria ..."
-
   arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64) asset="hysteria-linux-amd64" ;;
@@ -82,7 +87,7 @@ if [ -z "${OBFS_PASS}" ]; then
 fi
 
 # ===========================
-# 5) 检查 /acme 下所有子目录证书（优先使用）
+# 5) 在 /acme 下扫描子目录寻找 fullchain.pem + privkey.pem（优先使用）
 # ===========================
 USE_EXISTING_CERT=0
 USE_CERT_PATH=""
@@ -104,11 +109,11 @@ if [ -d "$ACME_BASE" ]; then
 fi
 
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[INFO] /acme 目录下未找到 fullchain/privkey 证书，将尝试 ACME HTTP-01（若需跳过请放证书到 /acme）"
+  echo "[INFO] /acme 下未找到证书，脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
 fi
 
 # ===========================
-# 6) 写 Hysteria2 配置（使用现有证书或 ACME）
+# 6) 写 hysteria 配置（使用已找到的证书或 ACME 配置）
 # ===========================
 mkdir -p /etc/hysteria
 if [ "$USE_EXISTING_CERT" -eq 1 ]; then
@@ -176,10 +181,10 @@ systemctl enable --now hysteria-server
 sleep 3
 
 # ===========================
-# 8) 如果没有现有证书则等待并检查 ACME 是否成功
+# 8) 如果没有现有证书则等待 ACME 产生日志（最多 60 秒）
 # ===========================
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[*] 等待 hysteria 完成 ACME HTTP-01 验证（最多 60 秒）..."
+  echo "[*] 等待 hysteria ACME HTTP-01 完成（最多 60 秒）..."
   TRIES=0
   ACME_OK=0
   while [ $TRIES -lt 12 ]; do
@@ -192,7 +197,7 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   done
 
   if [ "$ACME_OK" -ne 1 ]; then
-    echo "[ERR] ACME HTTP-01 证书申请未检测到成功记录。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 可达。"
+    echo "[ERR] 未检测到 ACME 成功日志。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 对外开放。"
     journalctl -u hysteria-server -n 100 --no-pager || true
     exit 1
   fi
@@ -205,10 +210,10 @@ echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
 
 # ===========================
-# 9) 构造 hysteria2 URI（URLEncode 关键字段）
+# 9) 构造 hysteria2 URI（URLEncode 关键字段，并处理空 pin）
 # ===========================
-# 如果 pinSHA256 是 None，设置为一个空字符串
-if [ -z "$PIN_SHA256" ]; then
+# 确保 PIN_SHA256 非空（若空则用空字符串）
+if [ -z "${PIN_SHA256:-}" ]; then
   PIN_SHA256=""
 fi
 
@@ -226,29 +231,28 @@ echo "======================================="
 echo
 
 # ===========================
-# 10) 生成更全面的规则模式友好 Clash 订阅
-# （包含更多流媒体、游戏、VoIP、金融、社交、端口规则等）
+# 10) 生成更全面的规则友好 Clash 订阅（模板写入 + 安全替换）
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
+
 cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
 # Auto-generated comprehensive Clash subscription (rules-mode friendly)
-# Replace Proxy group selection to your node after importing.
 
 proxies:
   - type: hysteria2
-    name: ${NAME_TAG}
-    server: ${SELECTED_IP}
-    port: ${HY2_PORT}
-    password: ${HY2_PASS}
+    name: __NAME_TAG__
+    server: __SELECTED_IP__
+    port: __HY2_PORT__
+    password: __HY2_PASS__
     obfs: salamander
-    obfs-password: ${OBFS_PASS}
-    sni: ${HY2_DOMAIN}
+    obfs-password: __OBFS_PASS__
+    sni: __HY2_DOMAIN__
 
 proxy-groups:
   - name: Proxy
     type: select
     proxies:
-      - ${NAME_TAG}
+      - __NAME_TAG__
       - DIRECT
 
   - name: Auto
@@ -256,25 +260,25 @@ proxy-groups:
     url: 'http://www.gstatic.com/generate_204'
     interval: 180
     proxies:
-      - ${NAME_TAG}
+      - __NAME_TAG__
       - DIRECT
 
   - name: Stream
     type: select
     proxies:
-      - ${NAME_TAG}
+      - __NAME_TAG__
       - DIRECT
 
   - name: Game
     type: select
     proxies:
-      - ${NAME_TAG}
+      - __NAME_TAG__
       - DIRECT
 
   - name: VoIP
     type: select
     proxies:
-      - ${NAME_TAG}
+      - __NAME_TAG__
       - DIRECT
 
 dns:
@@ -292,20 +296,16 @@ dns:
     - https://1.0.0.1/dns-query
   use-hosts: true
 
-# Rules - comprehensive
 rules:
-  # Local / RFC1918
   - IP-CIDR,10.0.0.0/8,DIRECT
   - IP-CIDR,172.16.0.0/12,DIRECT
   - IP-CIDR,192.168.0.0/16,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT
   - IP-CIDR,169.254.0.0/16,DIRECT
 
-  # Local names
   - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,localhost,DIRECT
 
-  # Common China services / CDNs (direct)
   - DOMAIN-SUFFIX,baidu.com,DIRECT
   - DOMAIN-SUFFIX,qq.com,DIRECT
   - DOMAIN-SUFFIX,taobao.com,DIRECT
@@ -316,13 +316,11 @@ rules:
   - DOMAIN-SUFFIX,iqiyi.com,DIRECT
   - DOMAIN-SUFFIX,youku.com,DIRECT
 
-  # System / management ports
   - PORT,22,DIRECT
   - PORT,80,DIRECT
   - PORT,443,DIRECT
   - PORT,8080,DIRECT
 
-  # --- Stream / Video services (prefer proxy for better geo) ---
   - DOMAIN-KEYWORD,netflix,Stream
   - DOMAIN-KEYWORD,disney,Stream
   - DOMAIN-KEYWORD,hulu,Stream
@@ -330,11 +328,8 @@ rules:
   - DOMAIN-KEYWORD,youtube,Stream
   - DOMAIN-KEYWORD,twitch,Stream
   - DOMAIN-KEYWORD,spotify,Stream
-  - DOMAIN-KEYWORD,cdn,direct
-  # map Stream group to Proxy by default (user can choose)
   - MATCH,Stream
 
-  # --- Gaming / Platforms ---
   - DOMAIN-SUFFIX,steamcommunity.com,Game
   - DOMAIN-SUFFIX,steampowered.com,Game
   - DOMAIN-SUFFIX,epicgames.com,Game
@@ -342,14 +337,12 @@ rules:
   - DOMAIN-KEYWORD,xbox,Game
   - DOMAIN-KEYWORD,nintendo,Game
 
-  # Gaming ports (UDP heavy)
   - PORT,3074,Game
   - PORT,3478-3480,Game
   - PORT,27014-27050,Game
   - PORT,3659,Game
   - PORT,25565,Game
 
-  # --- VoIP / WebRTC / STUN/TURN ---
   - DOMAIN-KEYWORD,zoom,VoIP
   - DOMAIN-KEYWORD,skype,VoIP
   - DOMAIN-KEYWORD,discord,VoIP
@@ -357,11 +350,9 @@ rules:
   - PORT,3478-3481,VoIP
   - PORT,19302,VoIP
 
-  # --- Banking / Finance (force direct for some local banks) ---
   - DOMAIN-KEYWORD,bank,DIRECT
   - DOMAIN-KEYWORD,finance,DIRECT
 
-  # --- Social & Messaging (often need proxy in restricted regions) ---
   - DOMAIN-KEYWORD,facebook,Proxy
   - DOMAIN-KEYWORD,instagram,Proxy
   - DOMAIN-KEYWORD,twitter,Proxy
@@ -369,32 +360,32 @@ rules:
   - DOMAIN-KEYWORD,telegram,Proxy
   - DOMAIN-KEYWORD,whatsapp,Proxy
 
-  # --- P2P / Torrent (optional: comment/uncomment) ---
-  # - DOMAIN-KEYWORD,torrent,Proxy
-  # - PORT,6881-6999,Proxy
-
-  # --- Geo rules ---
   - GEOIP,CN,DIRECT
 
-  # Final fallback: most traffic should go through Proxy (Rule mode will work reliably)
   - MATCH,Proxy
 EOF
 
-# replace template variables safely using python to avoid quoting issues
-python3 - <<PY
-import os
-p = os.environ.get("CLASH_OUT_PATH") + ".tmp"
-s = open(p,'r',encoding='utf-8').read()
-s = s.replace('${NAME_TAG}', os.environ.get('NAME_TAG'))
-s = s.replace('${SELECTED_IP}', os.environ.get('SELECTED_IP'))
-s = s.replace('${HY2_PORT}', os.environ.get('HY2_PORT'))
-s = s.replace('${HY2_PASS}', os.environ.get('HY2_PASS'))
-s = s.replace('${OBFS_PASS}', os.environ.get('OBFS_PASS'))
-s = s.replace('${HY2_DOMAIN}', os.environ.get('HY2_DOMAIN'))
-open(os.environ.get("CLASH_OUT_PATH"),'w',encoding='utf-8').write(s)
-os.remove(os.environ.get("CLASH_OUT_PATH") + ".tmp")
-print("[OK] Comprehensive Clash subscription written to:", os.environ.get("CLASH_OUT_PATH"))
-PY
+# perform safe substitutions
+TMPF="${CLASH_OUT_PATH}.tmp"
+TARGET="${CLASH_OUT_PATH}"
+
+NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
+IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
+PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
+PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
+OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
+DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
+
+sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
+    -e "s@__SELECTED_IP__@${IP_ESC}@g" \
+    -e "s@__HY2_PORT__@${PORT_ESC}@g" \
+    -e "s@__HY2_PASS__@${PASS_ESC}@g" \
+    -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
+    -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
+    "${TMPF}" > "${TARGET}"
+rm -f "${TMPF}"
+
+echo "[OK] Clash 订阅已写入：${TARGET}"
 
 # ===========================
 # 11) 配置 nginx 提供订阅
@@ -423,5 +414,4 @@ systemctl restart nginx
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo
-echo "提示：导入后请在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点；"
-echo "如果某服务仍不可用，把该服务的域名/端口/具体错误贴过来，我会把规则继续补齐。"
+echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
