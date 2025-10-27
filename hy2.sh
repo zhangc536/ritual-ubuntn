@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ===== 可改参数 =====
-HY2_PORT="${HY2_PORT:-8443}"
-HY2_PASS="${HY2_PASS:-}"
-OBFS_PASS="${OBFS_PASS:-}"
-NAME_TAG="${NAME_TAG:-MyHysteria}"
-PIN_SHA256="${PIN_SHA256:-}"   # 可以留空
+HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
+HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
+OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
+NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
+PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
 
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
@@ -316,11 +316,6 @@ rules:
   - DOMAIN-SUFFIX,iqiyi.com,DIRECT
   - DOMAIN-SUFFIX,youku.com,DIRECT
 
-  - PORT,22,DIRECT
-  - PORT,80,DIRECT
-  - PORT,443,DIRECT
-  - PORT,8080,DIRECT
-
   - DOMAIN-KEYWORD,netflix,Stream
   - DOMAIN-KEYWORD,disney,Stream
   - DOMAIN-KEYWORD,hulu,Stream
@@ -337,18 +332,10 @@ rules:
   - DOMAIN-KEYWORD,xbox,Game
   - DOMAIN-KEYWORD,nintendo,Game
 
-  - PORT,3074,Game
-  - PORT,3478-3480,Game
-  - PORT,27014-27050,Game
-  - PORT,3659,Game
-  - PORT,25565,Game
-
   - DOMAIN-KEYWORD,zoom,VoIP
   - DOMAIN-KEYWORD,skype,VoIP
   - DOMAIN-KEYWORD,discord,VoIP
   - DOMAIN-KEYWORD,teams,VoIP
-  - PORT,3478-3481,VoIP
-  - PORT,19302,VoIP
 
   - DOMAIN-KEYWORD,bank,DIRECT
   - DOMAIN-KEYWORD,finance,DIRECT
