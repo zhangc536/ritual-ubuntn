@@ -58,7 +58,8 @@ echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 # 3) 安装 hysteria 二进制（若不存在）
 # ===========================
 if ! command -v hysteria >/dev/null 2>&1; then
-  echo "[*] 安装 hysteria ... "
+  echo "[*] 安装 hysteria ..."
+
   arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64) asset="hysteria-linux-amd64" ;;
@@ -206,6 +207,11 @@ ss -lunp | grep -E ":${HY2_PORT}\b" || true
 # ===========================
 # 9) 构造 hysteria2 URI（URLEncode 关键字段）
 # ===========================
+# 如果 pinSHA256 是 None，设置为一个空字符串
+if [ -z "$PIN_SHA256" ]; then
+  PIN_SHA256=""
+fi
+
 PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$HY2_PASS")"
 OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$OBFS_PASS")"
 NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$NAME_TAG")"
@@ -221,6 +227,7 @@ echo
 
 # ===========================
 # 10) 生成更全面的规则模式友好 Clash 订阅
+# （包含更多流媒体、游戏、VoIP、金融、社交、端口规则等）
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
 cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
