@@ -297,7 +297,7 @@ tun:
 
 proxies:
   - type: hysteria2
-    name: __NAME_TAG__
+    name: "__NAME_TAG__"
     server: __SELECTED_IP__
     port: __HY2_PORT__
     password: __HY2_PASS__
@@ -306,24 +306,24 @@ proxies:
     sni: __HY2_DOMAIN__
 
 proxy-groups:
-  - name: 🚀 节点选择
+  - name: "🚀 节点选择"
     type: select
     proxies:
-      - ♻️ 自动选择
+      - "♻️ 自动选择"
       - DIRECT
-      - __NAME_TAG__
+      - "__NAME_TAG__"
   - name: ♻️ 自动选择
     type: url-test
     proxies:
-      - __NAME_TAG__
-    url: `http://www.gstatic.com/generate_204` 
+      - "__NAME_TAG__"
+    url: http://www.gstatic.com/generate_204
     interval: 300
   - name: 🎯 全球直连
     type: select
     proxies:
       - DIRECT
-      - 🚀 节点选择
-      - ♻️ 自动选择
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
   - name: 🛑 全球拦截
     type: select
     proxies:
@@ -332,70 +332,70 @@ proxy-groups:
   - name: 🐟 漏网之鱼
     type: select
     proxies:
-      - 🚀 节点选择
+      - "🚀 节点选择"
       - 🎯 全球直连
-      - ♻️ 自动选择
-      - __NAME_TAG__
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
 
 rule-providers:
   LocalAreaNetwork:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list
     path: ./rules/providers/LocalAreaNetwork.list
     interval: 86400
   BanAD:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list
     path: ./rules/providers/BanAD.list
     interval: 86400
   BanProgramAD:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list
     path: ./rules/providers/BanProgramAD.list
     interval: 86400
   GoogleCN:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list
     path: ./rules/providers/GoogleCN.list
     interval: 86400
   SteamCN:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list
     path: ./rules/providers/SteamCN.list
     interval: 86400
   Telegram:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
     path: ./rules/providers/Telegram.list
     interval: 86400
   ProxyMedia:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list
     path: ./rules/providers/ProxyMedia.list
     interval: 86400
   ProxyLite:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list
     path: ./rules/providers/ProxyLite.list
     interval: 86400
   ChinaDomain:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list
     path: ./rules/providers/ChinaDomain.list
     interval: 86400
   ChinaCompanyIp:
     type: http
     behavior: classical
-    url: `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list` 
+    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list
     path: ./rules/providers/ChinaCompanyIp.list
     interval: 86400
 
@@ -406,7 +406,7 @@ rules:
   - RULE-SET,GoogleCN,🎯 全球直连
   - RULE-SET,SteamCN,🎯 全球直连
   - RULE-SET,Telegram,🚀 节点选择
-  - RULE-Set,ProxyMedia,🚀 节点选择
+  - RULE-SET,ProxyMedia,🚀 节点选择
   - RULE-SET,ProxyLite,🚀 节点选择
   - RULE-SET,ChinaDomain,🎯 全球直连
   - RULE-SET,ChinaCompanyIp,🎯 全球直连
