@@ -309,9 +309,9 @@ proxy-groups:
   - name: "🚀 节点选择"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "♻️ 自动选择"
       - DIRECT
-      - "__NAME_TAG__"
   - name: "♻️ 自动选择"
     type: url-test
     proxies:
@@ -322,63 +322,64 @@ proxy-groups:
   - name: "📺 哔哩哔哩"
     type: select
     proxies:
-      - "🎯 全球直连"
-      - "🚀 节点选择"
       - "__NAME_TAG__"
+      - "🚀 节点选择"
+      - "🎯 全球直连"
   - name: "🎬 国外媒体"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
   - name: "🎵 Spotify"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
   - name: "📹 YouTube"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
   - name: "🎮 游戏平台"
     type: select
     proxies:
-      - "🎯 全球直连"
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
+      - "🎯 全球直连"
   - name: "🤖 OpenAI"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
   - name: "Ⓜ️ 微软服务"
     type: select
     proxies:
-      - "🎯 全球直连"
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
+      - "🎯 全球直连"
   - name: "🍎 苹果服务"
     type: select
     proxies:
-      - "🎯 全球直连"
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
+      - "🎯 全球直连"
   - name: "📲 电报消息"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
   - name: "🎯 全球直连"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - DIRECT
       - "🚀 节点选择"
       - "♻️ 自动选择"
@@ -390,10 +391,10 @@ proxy-groups:
   - name: "🐟 漏网之鱼"
     type: select
     proxies:
+      - "__NAME_TAG__"
       - "🚀 节点选择"
       - "🎯 全球直连"
       - "♻️ 自动选择"
-      - "__NAME_TAG__"
 
 rule-providers:
   LocalAreaNetwork:
