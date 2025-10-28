@@ -237,67 +237,28 @@ echo
 mkdir -p "${CLASH_WEB_DIR}"
 
 cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
-# ;不要随意改变关键字，否则会导致出错
-# ;acl4SSR规则
-# ;去广告：支持
-# ;自动测速：支持
-# ;微软分流：不支持
-# ;苹果分流：不支持
-# ;增强中国IP段：不支持
-# ;增强国外GFW：不支持
-# ;ruleset=🎯 全球直连,[]GEOIP,LAN
-
-mixed-port: 7890
-allow-lan: false
+port: 7890
+socks-port: 7891
+allow-lan: true
 mode: rule
-ipv6: false
 log-level: info
-external-controller: 0.0.0.0:9090
+external-controller: 127.0.0.1:9090
+
 dns:
   enable: true
   listen: 0.0.0.0:53
-  ipv6: false
   default-nameserver:
     - 223.5.5.5
-    - 114.114.114.114
-  nameserver:
-    - 223.5.5.5
-    - 114.114.114.114
-    - 119.29.29.29
-    - 180.76.76.76
+    - 8.8.8.8
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
-  fake-ip-filter:
-    - "*.lan"
-    - "*.localdomain"
-    - "*.example"
-    - "*.invalid"
-    - "*.localhost"
-    - "*.test"
-    - "*.local"
-    - "*.home.arpa"
-    - router.asus.com
-    - localhost.sec.qq.com
-    - localhost.ptlogin2.qq.com
-    - +.msftconnecttest.com
-tun:
-  enable: true
-  stack: system
-  auto-route: true
-  auto-detect-interface: true
-  dns-hijack:
-    - 114.114.114.114
-    - 180.76.76.76
-    - 119.29.29.29
-    - 223.5.5.5
-    - 8.8.8.8
-    - 8.8.4.4
-    - 1.1.1.1
-    - 1.0.0.1
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
 
 proxies:
-  - type: hysteria2
-    name: "__NAME_TAG__"
+  - name: "__NAME_TAG__"
+    type: hysteria2
     server: __SELECTED_IP__
     port: __HY2_PORT__
     password: __HY2_PASS__
@@ -310,167 +271,17 @@ proxy-groups:
     type: select
     proxies:
       - "__NAME_TAG__"
-      - "♻️ 自动选择"
       - DIRECT
-  - name: "♻️ 自动选择"
-    type: url-test
-    proxies:
-      - "__NAME_TAG__"
-    url: http://www.gstatic.com/generate_204
-    interval: 300
-    tolerance: 50
-  - name: "📺 哔哩哔哩"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "🎯 全球直连"
-  - name: "🎬 国外媒体"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "🎵 Spotify"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "📹 YouTube"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "🎮 游戏平台"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-      - "🎯 全球直连"
-  - name: "🤖 OpenAI"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "Ⓜ️ 微软服务"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-      - "🎯 全球直连"
-  - name: "🍎 苹果服务"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-      - "🎯 全球直连"
-  - name: "📲 电报消息"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "🎯 全球直连"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - DIRECT
-      - "🚀 节点选择"
-      - "♻️ 自动选择"
-  - name: "🛑 全球拦截"
-    type: select
-    proxies:
-      - REJECT
-      - DIRECT
-  - name: "🐟 漏网之鱼"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - "🚀 节点选择"
-      - "🎯 全球直连"
-      - "♻️ 自动选择"
-
-rule-providers:
-  LocalAreaNetwork:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list
-    path: ./rules/providers/LocalAreaNetwork.list
-    interval: 86400
-  BanAD:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list
-    path: ./rules/providers/BanAD.list
-    interval: 86400
-  BanProgramAD:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list
-    path: ./rules/providers/BanProgramAD.list
-    interval: 86400
-  GoogleCN:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list
-    path: ./rules/providers/GoogleCN.list
-    interval: 86400
-  SteamCN:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list
-    path: ./rules/providers/SteamCN.list
-    interval: 86400
-  Telegram:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
-    path: ./rules/providers/Telegram.list
-    interval: 86400
-  ProxyMedia:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list
-    path: ./rules/providers/ProxyMedia.list
-    interval: 86400
-  ProxyLite:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list
-    path: ./rules/providers/ProxyLite.list
-    interval: 86400
-  ChinaDomain:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list
-    path: ./rules/providers/ChinaDomain.list
-    interval: 86400
-  ChinaCompanyIp:
-    type: http
-    behavior: classical
-    url: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list
-    path: ./rules/providers/ChinaCompanyIp.list
-    interval: 86400
 
 rules:
-  - RULE-SET,LocalAreaNetwork,🎯 全球直连
-  - RULE-SET,BanAD,🛑 全球拦截
-  - RULE-SET,BanProgramAD,🛑 全球拦截
-  - RULE-SET,GoogleCN,🎯 全球直连
-  - RULE-SET,SteamCN,🎯 全球直连
-  - RULE-SET,Telegram,🚀 节点选择
-  - RULE-SET,ProxyMedia,🚀 节点选择
-  - RULE-SET,ProxyLite,🚀 节点选择
-  - RULE-SET,ChinaDomain,🎯 全球直连
-  - RULE-SET,ChinaCompanyIp,🎯 全球直连
-  - GEOIP,CN,🎯 全球直连
-  - MATCH,🐟 漏网之鱼
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择
 EOF
 
 # perform safe substitutions
