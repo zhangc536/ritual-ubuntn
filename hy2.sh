@@ -437,7 +437,49 @@ rm -f "${TMPF}"
 echo "[OK] Clash 订阅已写入：${TARGET}"
 
 # ===========================
-# 11) 配置 nginx 提供订阅
+# 11) 生成 ACL4SSR_Mini.ini 外部配置并提供下载
+# ===========================
+
+# 生成 ACL4SSR_Mini.ini（Subconverter 外部配置模板）
+ACL_MINI_TMP="${CLASH_WEB_DIR}/ACL4SSR_Mini.ini.tmp"
+ACL_MINI_OUT="${CLASH_WEB_DIR}/ACL4SSR_Mini.ini"
+
+cat > "${ACL_MINI_TMP}" <<'EOF'
+[custom]
+enable_rule_generator=true
+overwrite_original_rules=true
+
+; 代理组定义（包含你的单节点）
+proxy_group=🚀 节点选择,select,♻️ 自动选择,DIRECT,__NAME_TAG__
+proxy_group=♻️ 自动选择,url-test,__NAME_TAG__,url=http://www.gstatic.com/generate_204,interval=300
+proxy_group=🎯 全球直连,select,DIRECT,🚀 节点选择,♻️ 自动选择
+proxy_group=🛑 全球拦截,select,REJECT,DIRECT
+proxy_group=🐟 漏网之鱼,select,🚀 节点选择,🎯 全球直连,♻️ 自动选择,__NAME_TAG__
+
+; 规则集（ACL4SSR Mini）
+ruleset=🎯 全球直连,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list
+ruleset=🛑 全球拦截,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list
+ruleset=🛑 全球拦截,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list
+ruleset=🎯 全球直连,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list
+ruleset=🎯 全球直连,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list
+ruleset=🚀 节点选择,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
+ruleset=🚀 节点选择,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list
+ruleset=🚀 节点选择,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list
+ruleset=🎯 全球直连,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list
+ruleset=🎯 全球直连,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list
+ruleset=🎯 全球直连,[]GEOIP,CN
+ruleset=🐟 漏网之鱼,[]MATCH
+EOF
+
+# 安全替换占位符
+NAME_ESC_MINI="$(escape_for_sed "${NAME_TAG}")"
+sed -e "s@__NAME_TAG__@${NAME_ESC_MINI}@g" "${ACL_MINI_TMP}" > "${ACL_MINI_OUT}"
+rm -f "${ACL_MINI_TMP}"
+
+echo "[OK] ACL4SSR_Mini.ini 已写入：${ACL_MINI_OUT}"
+
+# ===========================
+# 12) 配置 nginx 提供订阅与外部配置
 # ===========================
 cat >/etc/nginx/sites-available/clash.conf <<EOF
 server {
@@ -451,6 +493,11 @@ server {
         try_files /clash_subscription.yaml =404;
     }
 
+    location /ACL4SSR_Mini.ini {
+        default_type text/plain;
+        try_files /ACL4SSR_Mini.ini =404;
+    }
+
     access_log /var/log/nginx/clash_access.log;
     error_log /var/log/nginx/clash_error.log;
 }
@@ -462,5 +509,7 @@ systemctl restart nginx
 
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
+echo "[OK] ACL4SSR 外部配置（Mini）下载："
+echo "    http://${SELECTED_IP}:${HTTP_PORT}/ACL4SSR_Mini.ini"
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
