@@ -312,28 +312,86 @@ proxy-groups:
       - "♻️ 自动选择"
       - DIRECT
       - "__NAME_TAG__"
-  - name: ♻️ 自动选择
+  - name: "♻️ 自动选择"
     type: url-test
     proxies:
       - "__NAME_TAG__"
     url: http://www.gstatic.com/generate_204
     interval: 300
-  - name: 🎯 全球直连
+    tolerance: 50
+  - name: "📺 哔哩哔哩"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🚀 节点选择"
+      - "__NAME_TAG__"
+  - name: "🎬 国外媒体"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "🎵 Spotify"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "📹 YouTube"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "🎮 游戏平台"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "🤖 OpenAI"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "Ⓜ️ 微软服务"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "🍎 苹果服务"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "📲 电报消息"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "♻️ 自动选择"
+      - "__NAME_TAG__"
+  - name: "🎯 全球直连"
     type: select
     proxies:
       - DIRECT
       - "🚀 节点选择"
       - "♻️ 自动选择"
-  - name: 🛑 全球拦截
+  - name: "🛑 全球拦截"
     type: select
     proxies:
       - REJECT
       - DIRECT
-  - name: 🐟 漏网之鱼
+  - name: "🐟 漏网之鱼"
     type: select
     proxies:
       - "🚀 节点选择"
-      - 🎯 全球直连
+      - "🎯 全球直连"
       - "♻️ 自动选择"
       - "__NAME_TAG__"
 
