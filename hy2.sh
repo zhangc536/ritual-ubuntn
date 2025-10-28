@@ -236,7 +236,10 @@ echo
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
 
-cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
+# 已切换为 ACL4SSR_Mini.ini 模板，取消直接生成 YAML 订阅
+# 若仍需 YAML，可使用 Subconverter 将本 INI 外部配置与节点合成。
+:
+cat <<'EOF' >/dev/null
 # ;不要随意改变关键字，否则会导致出错
 # ;acl4SSR规则
 # ;去广告：支持
@@ -414,28 +417,6 @@ rules:
   - MATCH,🐟 漏网之鱼
 EOF
 
-# perform safe substitutions
-TMPF="${CLASH_OUT_PATH}.tmp"
-TARGET="${CLASH_OUT_PATH}"
-
-NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
-IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
-PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
-PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
-OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
-DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
-
-sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
-    -e "s@__SELECTED_IP__@${IP_ESC}@g" \
-    -e "s@__HY2_PORT__@${PORT_ESC}@g" \
-    -e "s@__HY2_PASS__@${PASS_ESC}@g" \
-    -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
-    -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
-    "${TMPF}" > "${TARGET}"
-rm -f "${TMPF}"
-
-echo "[OK] Clash 订阅已写入：${TARGET}"
-
 # ===========================
 # 11) 生成 ACL4SSR_Mini.ini 外部配置并提供下载
 # ===========================
@@ -488,11 +469,6 @@ server {
 
     root ${CLASH_WEB_DIR};
 
-    location /clash_subscription.yaml {
-        default_type application/x-yaml;
-        try_files /clash_subscription.yaml =404;
-    }
-
     location /ACL4SSR_Mini.ini {
         default_type text/plain;
         try_files /ACL4SSR_Mini.ini =404;
@@ -507,8 +483,6 @@ ln -sf /etc/nginx/sites-available/clash.conf /etc/nginx/sites-enabled/clash.conf
 nginx -t
 systemctl restart nginx
 
-echo "[OK] Clash 订阅通过 nginx 提供："
-echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo "[OK] ACL4SSR 外部配置（Mini）下载："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/ACL4SSR_Mini.ini"
 echo
