@@ -237,20 +237,207 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   echo "[*] 等待 hysteria ACME 证书申请完成（最多 60 秒）..."
   TRIES=0
   ACME_OK=0
+  RATE_LIMITED=0
+  
   while [ $TRIES -lt 12 ]; do
+    # 检查证书申请成功
     if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
       ACME_OK=1
       break
     fi
+    
+    # 检查 HTTP 429 速率限制错误
+    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(429|rate.?limit|too.?many.?requests|rateLimited)"; then
+      RATE_LIMITED=1
+      echo "[WARN] 检测到 HTTP 429 速率限制错误，尝试切换域名..."
+      break
+    fi
+    
     sleep 5
     TRIES=$((TRIES+1))
   done
 
-  if [ "$ACME_OK" -ne 1 ]; then
+  # 处理速率限制：尝试切换到下一个可用域名
+  if [ "$RATE_LIMITED" -eq 1 ]; then
+    echo "[*] 由于 HTTP 429 错误，尝试切换到备用域名服务..."
+    
+    # 获取当前使用的域名服务
+    CURRENT_SERVICE=""
+    if echo "$HY2_DOMAIN" | grep -q "sslip.io"; then
+      CURRENT_SERVICE="sslip.io"
+    elif echo "$HY2_DOMAIN" | grep -q "nip.io"; then
+      CURRENT_SERVICE="nip.io"
+    elif echo "$HY2_DOMAIN" | grep -q "xip.io"; then
+      CURRENT_SERVICE="xip.io"
+    fi
+    
+    # 尝试切换到下一个域名服务
+    SWITCHED=0
+    for service in "${DOMAIN_SERVICES[@]}"; do
+      # 跳过当前已使用的服务
+      if [ "$service" = "$CURRENT_SERVICE" ]; then
+        continue
+      fi
+      
+      # 生成新的测试域名
+      if [ "$service" = "xip.io" ]; then
+        new_domain="${IP_DOT}.${service}"
+      else
+        new_domain="${IP_DASH}.${service}"
+      fi
+      
+      echo "[*] 尝试切换到 ${service}: ${new_domain}"
+      
+      # 快速验证新域名
+      resolved_ip="$(getent ahostsv4 "$new_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+      if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
+        echo "[OK] ${service} 解析验证成功，切换域名..."
+        HY2_DOMAIN="$new_domain"
+        SWITCHED=1
+        
+        # 停止当前服务
+        systemctl stop hysteria-server 2>/dev/null || true
+        
+        # 重新生成配置文件
+        cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+tls:
+  cert: ${CERT_PATH}
+  key: ${KEY_PATH}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com
+    rewriteHost: true
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+
+acme:
+  domains:
+    - ${HY2_DOMAIN}
+  disable_http_challenge: false
+  disable_tlsalpn_challenge: true
+EOF
+        
+        # 重启服务
+         systemctl start hysteria-server
+         echo "[OK] 已切换到 ${service}，重新启动证书申请..."
+         
+         # 更新 Clash 配置文件中的域名
+         echo "[*] 更新 Clash 订阅配置中的域名..."
+         if [ -f "${CLASH_OUT_PATH}" ]; then
+           # 重新生成 Clash 配置
+           TMPF="${CLASH_OUT_PATH}.tmp"
+           TARGET="${CLASH_OUT_PATH}"
+           
+           # 重新转义新域名
+           DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
+           
+           # 从模板重新生成（需要先创建临时模板）
+           cat >"${TMPF}" <<EOF
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
+external-controller: '127.0.0.1:9090'
+
+dns:
+  enable: true
+  ipv6: false
+  default-nameserver:
+    - 223.5.5.5
+    - 8.8.8.8
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+
+proxies:
+  - name: "__NAME_TAG__"
+    type: hysteria2
+    server: __SELECTED_IP__
+    port: __HY2_PORT__
+    password: __HY2_PASS__
+    obfs: salamander
+    obfs-password: __OBFS_PASS__
+    sni: __HY2_DOMAIN__
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "__NAME_TAG__"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择
+EOF
+           
+           # 执行变量替换
+           NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
+           IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
+           PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
+           PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
+           OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
+           
+           sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
+               -e "s@__SELECTED_IP__@${IP_ESC}@g" \
+               -e "s@__HY2_PORT__@${PORT_ESC}@g" \
+               -e "s@__HY2_PASS__@${PASS_ESC}@g" \
+               -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
+               -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
+               "${TMPF}" > "${TARGET}"
+           rm -f "${TMPF}"
+           
+           echo "[OK] Clash 订阅配置已更新为新域名: ${HY2_DOMAIN}"
+         fi
+         
+         # 重新等待证书申请
+         TRIES=0
+         ACME_OK=0
+         while [ $TRIES -lt 12 ]; do
+           if journalctl -u hysteria-server --no-pager -n 100 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
+             ACME_OK=1
+             echo "[OK] 域名切换后证书申请成功"
+             break
+           fi
+           sleep 5
+           TRIES=$((TRIES+1))
+         done
+         break
+      else
+        echo "[WARN] ${service} 解析验证失败，尝试下一个服务"
+      fi
+    done
+    
+    if [ "$SWITCHED" -eq 0 ]; then
+      echo "[ERROR] 无法找到可用的备用域名服务"
+    fi
+  fi
+
+  if [ "$ACME_OK" -ne 1 ] && [ "$RATE_LIMITED" -eq 0 ]; then
     echo "[WARN] 未检测到 ACME 成功日志，但可能证书已申请成功。检查日志详情："
-    journalctl -u hysteria-server -n 50 --no-pager | grep -E -i "(acme|certificate|tls-alpn|http-01|challenge)" || true
+    journalctl -u hysteria-server -n 50 --no-pager | grep -E -i "(acme|certificate|tls-alpn|http-01|challenge|429|rate.?limit)" || true
     echo "[INFO] 继续执行，证书可能已成功获取"
-  else
+  elif [ "$ACME_OK" -eq 1 ]; then
     echo "[OK] ACME 证书申请成功检测到"
   fi
 else
