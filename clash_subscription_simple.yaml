@@ -1,0 +1,45 @@
+port: 7890
+socks-port: 7891
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  default-nameserver:
+    - 223.5.5.5
+    - 8.8.8.8
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+
+proxies:
+  - name: "MyHysteria"
+    type: hysteria2
+    server: YOUR_SERVER_IP
+    port: 8443
+    password: YOUR_PASSWORD
+    obfs: salamander
+    obfs-password: YOUR_OBFS_PASSWORD
+    sni: YOUR_DOMAIN
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "MyHysteria"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择

@@ -43,20 +43,70 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 生成域名（sslip.io 优先 -> nip.io -> warn）
+# 2) 生成域名（sslip.io -> nip.io -> xip.io -> warn）
 # ===========================
 IP_DASH="${SELECTED_IP//./-}"
-HY2_DOMAIN="${IP_DASH}.sslip.io"
-RES_A="$(getent ahostsv4 "$HY2_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-if [ -z "$RES_A" ] || [ "$RES_A" != "$SELECTED_IP" ]; then
-  ALT="${IP_DASH}.nip.io"
-  RES2="$(getent ahostsv4 "$ALT" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-  if [ -n "$RES2" ] && [ "$RES2" = "$SELECTED_IP" ]; then
-    HY2_DOMAIN="$ALT"
+IP_DOT="${SELECTED_IP}"
+
+# 定义域名服务列表，按优先级排序
+DOMAIN_SERVICES=("sslip.io" "nip.io" "xip.io")
+HY2_DOMAIN=""
+
+echo "[*] 检测可用的域名解析服务..."
+
+# 遍历域名服务，找到第一个可用的
+for service in "${DOMAIN_SERVICES[@]}"; do
+  if [ "$service" = "xip.io" ]; then
+    # xip.io 使用点分格式
+    test_domain="${IP_DOT}.${service}"
   else
-    echo "[WARN] sslip.io / nip.io 未解析到该 IP（${SELECTED_IP}）。"
-    echo "       若要使用 ACME HTTP-01，请确保域名解析到本机且 80/tcp 可达。"
+    # sslip.io 和 nip.io 使用横线格式
+    test_domain="${IP_DASH}.${service}"
   fi
+  
+  echo "[*] 测试 ${service}: ${test_domain}"
+  
+  # 多重检查域名解析可用性
+  resolved_ip=""
+  
+  # 方法1: 使用 getent
+  resolved_ip="$(getent ahostsv4 "$test_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+  
+  # 方法2: 如果 getent 失败，尝试 nslookup
+  if [ -z "$resolved_ip" ] && command -v nslookup >/dev/null 2>&1; then
+    resolved_ip="$(nslookup "$test_domain" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1 || true)"
+  fi
+  
+  # 方法3: 如果还是失败，尝试 dig
+  if [ -z "$resolved_ip" ] && command -v dig >/dev/null 2>&1; then
+    resolved_ip="$(dig +short "$test_domain" A 2>/dev/null | head -n1 || true)"
+  fi
+  
+  # 验证解析结果
+  if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
+    HY2_DOMAIN="$test_domain"
+    echo "[OK] ${service} 解析正常: ${test_domain} -> ${resolved_ip}"
+    
+    # 额外验证：尝试 HTTP 连接测试（可选）
+    if command -v curl >/dev/null 2>&1; then
+      if curl -s --connect-timeout 3 "http://${test_domain}:80" >/dev/null 2>&1 || [ $? -eq 7 ]; then
+        echo "[OK] ${service} HTTP 连接测试通过"
+      else
+        echo "[INFO] ${service} HTTP 连接测试失败，但域名解析正常"
+      fi
+    fi
+    break
+  else
+    echo "[WARN] ${service} 解析失败或不匹配: ${test_domain} -> ${resolved_ip:-"无解析"}"
+  fi
+done
+
+# 如果所有服务都不可用，发出警告但继续使用 sslip.io
+if [ -z "$HY2_DOMAIN" ]; then
+  HY2_DOMAIN="${IP_DASH}.sslip.io"
+  echo "[WARN] 所有域名解析服务（sslip.io/nip.io/xip.io）都无法正确解析到 ${SELECTED_IP}。"
+  echo "       将使用 ${HY2_DOMAIN}，但 ACME HTTP-01 可能失败。"
+  echo "       请确保域名解析到本机且 80/tcp 可达。"
 fi
 echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 
