@@ -298,28 +298,29 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
         # 停止当前服务
         systemctl stop hysteria-server 2>/dev/null || true
         
-        # 重新生成配置文件
+        # 重新生成配置文件（保持与初始逻辑一致）
+        # 根据是否存在现有证书选择 tls 或 acme 写法
         cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
-
-tls:
-  cert: ${CERT_PATH}
-  key: ${KEY_PATH}
 
 auth:
   type: password
   password: ${HY2_PASS}
 
-masquerade:
-  type: proxy
-  proxy:
-    url: https://bing.com
-    rewriteHost: true
-
 obfs:
   type: salamander
   salamander:
     password: ${OBFS_PASS}
+EOF
+        if [ "$USE_EXISTING_CERT" -eq 1 ]; then
+          cat >>/etc/hysteria/config.yaml <<EOF
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+        else
+          cat >>/etc/hysteria/config.yaml <<EOF
 
 acme:
   domains:
@@ -327,6 +328,7 @@ acme:
   disable_http_challenge: false
   disable_tlsalpn_challenge: true
 EOF
+        fi
         
         # 重启服务
          systemctl start hysteria-server
