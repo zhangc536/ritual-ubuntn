@@ -12,6 +12,127 @@ CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 
+# ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
+escape_for_sed() {
+  # read input as $1
+  printf '%s' "$1" | sed -e 's/[\/&@]/\\&/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+}
+
+# ===========================
+# helper: 定义定时维护任务（每7天清缓存+硬重启）
+# ===========================
+setup_auto_reboot_cron() {
+  # 可通过 ENABLE_AUTO_REBOOT_CACHE=0 关闭
+  if [ "${ENABLE_AUTO_REBOOT_CACHE:-1}" != "1" ]; then
+    echo "[INFO] 自动维护任务已禁用（ENABLE_AUTO_REBOOT_CACHE=0）"
+    return 0
+  fi
+
+  # 解析命令绝对路径，确保可用
+  local SHUTDOWN_BIN=""
+  if [ -x /sbin/shutdown ]; then
+    SHUTDOWN_BIN="/sbin/shutdown"
+  elif [ -x /usr/sbin/shutdown ]; then
+    SHUTDOWN_BIN="/usr/sbin/shutdown"
+  elif command -v shutdown >/dev/null 2>&1; then
+    SHUTDOWN_BIN="$(command -v shutdown)"
+  else
+    echo "[ERROR] 未找到 shutdown 命令，无法设置硬重启任务"
+    return 1
+  fi
+
+  local SYNC_BIN=""
+  if [ -x /usr/bin/sync ]; then
+    SYNC_BIN="/usr/bin/sync"
+  elif command -v sync >/dev/null 2>&1; then
+    SYNC_BIN="$(command -v sync)"
+  else
+    echo "[ERROR] 未找到 sync 命令，无法设置缓存清理任务"
+    return 1
+  fi
+
+  local DROP_CACHES="/proc/sys/vm/drop_caches"
+  if [ ! -e "$DROP_CACHES" ]; then
+    echo "[WARN] 未找到 $DROP_CACHES，内存缓存清理可能无法执行"
+  elif [ ! -w "$DROP_CACHES" ]; then
+    echo "[WARN] 无法写入 $DROP_CACHES，请确保以 root 运行"
+  fi
+
+  local CRON_LINE="0 3 */7 * * ${SYNC_BIN} && echo 3 > ${DROP_CACHES} && ${SHUTDOWN_BIN} -r now"
+
+  # 确保 cron 服务可用
+  if ! command -v crontab >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "[INFO] 未检测到 crontab，尝试安装 cron..."
+      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y cron >/dev/null 2>&1 || true
+    else
+      echo "[WARN] 未找到 crontab 命令且无法自动安装 cron。请手动安装后重试。"
+    fi
+  fi
+
+  # 尝试启动并设置 cron 服务
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now cron >/dev/null 2>&1 || true
+    if ! systemctl is-active --quiet cron; then
+      echo "[WARN] cron 服务未处于 active 状态，请检查：systemctl status cron"
+    fi
+  else
+    service cron start >/dev/null 2>&1 || true
+  fi
+
+  if command -v crontab >/dev/null 2>&1; then
+    # 仅在不存在时添加，保证幂等
+    local EXISTING
+    EXISTING="$(crontab -l 2>/dev/null || true)"
+    if ! printf "%s\n" "$EXISTING" | grep -Fq "$CRON_LINE"; then
+      local TMP_CRON
+      TMP_CRON="$(mktemp)"
+      printf "%s\n" "$EXISTING" >"$TMP_CRON"
+      printf "%s\n" "$CRON_LINE" >>"$TMP_CRON"
+      crontab "$TMP_CRON"
+      rm -f "$TMP_CRON"
+      echo "[OK] 已添加 root 定时任务：每 7 天 03:00 清缓存并重启"
+    else
+      echo "[INFO] root 定时任务已存在，跳过添加"
+    fi
+
+    # 就绪确认：确认已写入 crontab
+    if crontab -l 2>/dev/null | grep -Fq "$CRON_LINE"; then
+      echo "[OK] 硬重启就绪：crontab 已写入，命令路径: ${SYNC_BIN}, ${SHUTDOWN_BIN}"
+    fi
+  fi
+}
+
+# ===========================
+# 模式选择：1 全新安装；2 仅添加维护任务
+# 可用环境变量 SCRIPT_MODE=1/2 跳过交互
+# ===========================
+SCRIPT_MODE="${SCRIPT_MODE:-}"
+if [ -z "$SCRIPT_MODE" ]; then
+  if [ -t 0 ]; then
+    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每7天自动清缓存+硬重启 [默认1]: " SCRIPT_MODE || true
+  else
+    SCRIPT_MODE="1"
+  fi
+fi
+
+case "${SCRIPT_MODE}" in
+  2)
+    echo "[INFO] 选择模式 2：仅添加每7天自动清缓存+硬重启"
+    ENABLE_AUTO_REBOOT_CACHE="${ENABLE_AUTO_REBOOT_CACHE:-1}"
+    setup_auto_reboot_cron
+    echo "[OK] 维护任务已添加，脚本结束。"
+    exit 0
+    ;;
+  1|"")
+    echo "[INFO] 选择模式 1：全新安装"
+    ;;
+  *)
+    echo "[WARN] 无效选择（${SCRIPT_MODE}），默认使用模式 1：全新安装"
+    ;;
+esac
+
 # ===========================
 # 0) 获取公网 IPv4
 # ===========================
@@ -37,20 +158,70 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 生成域名（sslip.io 优先）
+# 2) 生成域名（sslip.io -> nip.io -> xip.io -> warn）
 # ===========================
 IP_DASH="${SELECTED_IP//./-}"
-HY2_DOMAIN="${IP_DASH}.sslip.io"
-RES_A="$(getent ahostsv4 "$HY2_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-if [ -z "$RES_A" ] || [ "$RES_A" != "$SELECTED_IP" ]; then
-  ALT="${IP_DASH}.nip.io"
-  RES2="$(getent ahostsv4 "$ALT" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-  if [ -n "$RES2" ] && [ "$RES2" = "$SELECTED_IP" ]; then
-    HY2_DOMAIN="$ALT"
+IP_DOT="${SELECTED_IP}"
+
+# 定义域名服务列表，按优先级排序
+DOMAIN_SERVICES=("sslip.io" "nip.io" "xip.io")
+HY2_DOMAIN=""
+
+echo "[*] 检测可用的域名解析服务..."
+
+# 遍历域名服务，找到第一个可用的
+for service in "${DOMAIN_SERVICES[@]}"; do
+  if [ "$service" = "xip.io" ]; then
+    # xip.io 使用点分格式
+    test_domain="${IP_DOT}.${service}"
   else
-    echo "[WARN] sslip.io / nip.io 未解析到该 IP（${SELECTED_IP}）。"
-    echo "       若要使用 ACME HTTP-01，请确保域名解析到本机且 80/tcp 可达。"
+    # sslip.io 和 nip.io 使用横线格式
+    test_domain="${IP_DASH}.${service}"
   fi
+  
+  echo "[*] 测试 ${service}: ${test_domain}"
+  
+  # 多重检查域名解析可用性
+  resolved_ip=""
+  
+  # 方法1: 使用 getent
+  resolved_ip="$(getent ahostsv4 "$test_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+  
+  # 方法2: 如果 getent 失败，尝试 nslookup
+  if [ -z "$resolved_ip" ] && command -v nslookup >/dev/null 2>&1; then
+    resolved_ip="$(nslookup "$test_domain" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1 || true)"
+  fi
+  
+  # 方法3: 如果还是失败，尝试 dig
+  if [ -z "$resolved_ip" ] && command -v dig >/dev/null 2>&1; then
+    resolved_ip="$(dig +short "$test_domain" A 2>/dev/null | head -n1 || true)"
+  fi
+  
+  # 验证解析结果
+  if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
+    HY2_DOMAIN="$test_domain"
+    echo "[OK] ${service} 解析正常: ${test_domain} -> ${resolved_ip}"
+    
+    # 额外验证：尝试 HTTP 连接测试（可选）
+    if command -v curl >/dev/null 2>&1; then
+      if curl -s --connect-timeout 3 "http://${test_domain}:80" >/dev/null 2>&1 || [ $? -eq 7 ]; then
+        echo "[OK] ${service} HTTP 连接测试通过"
+      else
+        echo "[INFO] ${service} HTTP 连接测试失败，但域名解析正常"
+      fi
+    fi
+    break
+  else
+    echo "[WARN] ${service} 解析失败或不匹配: ${test_domain} -> ${resolved_ip:-"无解析"}"
+  fi
+done
+
+# 如果所有服务都不可用，发出警告但继续使用 sslip.io
+if [ -z "$HY2_DOMAIN" ]; then
+  HY2_DOMAIN="${IP_DASH}.sslip.io"
+  echo "[WARN] 所有域名解析服务（sslip.io/nip.io/xip.io）都无法正确解析到 ${SELECTED_IP}。"
+  echo "       将使用 ${HY2_DOMAIN}，但 ACME HTTP-01 可能失败。"
+  echo "       请确保域名解析到本机且 80/tcp 可达。"
 fi
 echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 
@@ -81,7 +252,7 @@ if [ -z "${OBFS_PASS}" ]; then
 fi
 
 # ===========================
-# 5) 检查 /acme 下所有子目录证书（优先使用）
+# 5) 在 /acme 下扫描子目录寻找 fullchain.pem + privkey.pem（优先使用）
 # ===========================
 USE_EXISTING_CERT=0
 USE_CERT_PATH=""
@@ -103,11 +274,11 @@ if [ -d "$ACME_BASE" ]; then
 fi
 
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[INFO] /acme 目录下未找到 fullchain/privkey 证书，将尝试 ACME HTTP-01（若需跳过请放证书到 /acme）"
+  echo "[INFO] /acme 下未找到证书，脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
 fi
 
 # ===========================
-# 6) 写 Hysteria2 配置（使用现有证书或 ACME）
+# 6) 写 hysteria 配置（使用已找到的证书或 ACME 配置）
 # ===========================
 mkdir -p /etc/hysteria
 if [ "$USE_EXISTING_CERT" -eq 1 ]; then
@@ -175,37 +346,234 @@ systemctl enable --now hysteria-server
 sleep 3
 
 # ===========================
-# 8) 如果没有现有证书则等待并检查 ACME 是否成功
+# 8) 如果没有现有证书则等待 ACME 产生日志（最多 60 秒）
 # ===========================
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[*] 等待 hysteria 完成 ACME HTTP-01 验证（最多 60 秒）..."
+  echo "[*] 等待 hysteria ACME 证书申请完成（最多 60 秒）..."
   TRIES=0
   ACME_OK=0
+  RATE_LIMITED=0
+  
   while [ $TRIES -lt 12 ]; do
-    if journalctl -u hysteria-server --no-pager -n 200 | grep -iq "acme"; then
+    # 检查证书申请成功
+    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
       ACME_OK=1
       break
     fi
+    
+    # 检查 HTTP 429 速率限制错误
+    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(429|rate.?limit|too.?many.?requests|rateLimited)"; then
+      RATE_LIMITED=1
+      echo "[WARN] 检测到 HTTP 429 速率限制错误，尝试切换域名..."
+      break
+    fi
+    
     sleep 5
     TRIES=$((TRIES+1))
   done
 
-  if [ "$ACME_OK" -ne 1 ]; then
-    echo "[ERR] ACME HTTP-01 证书申请未检测到成功记录。请确认 ${HY2_DOMAIN} 解析正确且 80/tcp 可达。"
-    journalctl -u hysteria-server -n 100 --no-pager || true
-    exit 1
+  # 处理速率限制：尝试切换到下一个可用域名
+  if [ "$RATE_LIMITED" -eq 1 ]; then
+    echo "[*] 由于 HTTP 429 错误，尝试切换到备用域名服务..."
+    
+    # 获取当前使用的域名服务
+    CURRENT_SERVICE=""
+    if echo "$HY2_DOMAIN" | grep -q "sslip.io"; then
+      CURRENT_SERVICE="sslip.io"
+    elif echo "$HY2_DOMAIN" | grep -q "nip.io"; then
+      CURRENT_SERVICE="nip.io"
+    elif echo "$HY2_DOMAIN" | grep -q "xip.io"; then
+      CURRENT_SERVICE="xip.io"
+    fi
+    
+    # 尝试切换到下一个域名服务
+    SWITCHED=0
+    for service in "${DOMAIN_SERVICES[@]}"; do
+      # 跳过当前已使用的服务
+      if [ "$service" = "$CURRENT_SERVICE" ]; then
+        continue
+      fi
+      
+      # 生成新的测试域名
+      if [ "$service" = "xip.io" ]; then
+        new_domain="${IP_DOT}.${service}"
+      else
+        new_domain="${IP_DASH}.${service}"
+      fi
+      
+      echo "[*] 尝试切换到 ${service}: ${new_domain}"
+      
+      # 快速验证新域名
+      resolved_ip="$(getent ahostsv4 "$new_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+      if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
+        echo "[OK] ${service} 解析验证成功，切换域名..."
+        HY2_DOMAIN="$new_domain"
+        SWITCHED=1
+        
+        # 停止当前服务
+        systemctl stop hysteria-server 2>/dev/null || true
+        
+        # 重新生成配置文件（保持与初始逻辑一致）
+        # 根据是否存在现有证书选择 tls 或 acme 写法
+        cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+EOF
+        if [ "$USE_EXISTING_CERT" -eq 1 ]; then
+          cat >>/etc/hysteria/config.yaml <<EOF
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+        else
+          cat >>/etc/hysteria/config.yaml <<EOF
+
+acme:
+  domains:
+    - ${HY2_DOMAIN}
+  disable_http_challenge: false
+  disable_tlsalpn_challenge: true
+EOF
+        fi
+        
+        # 重启服务
+         systemctl start hysteria-server
+         echo "[OK] 已切换到 ${service}，重新启动证书申请..."
+         
+         # 更新 Clash 配置文件中的域名
+         echo "[*] 更新 Clash 订阅配置中的域名..."
+         if [ -f "${CLASH_OUT_PATH}" ]; then
+           # 重新生成 Clash 配置
+           TMPF="${CLASH_OUT_PATH}.tmp"
+           TARGET="${CLASH_OUT_PATH}"
+           
+           # 重新转义新域名
+           DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
+           
+           # 从模板重新生成（需要先创建临时模板）
+           cat >"${TMPF}" <<EOF
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
+external-controller: '127.0.0.1:9090'
+
+dns:
+  enable: true
+  ipv6: false
+  default-nameserver:
+    - 223.5.5.5
+    - 8.8.8.8
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+
+proxies:
+  - name: "__NAME_TAG__"
+    type: hysteria2
+    server: __SELECTED_IP__
+    port: __HY2_PORT__
+    password: __HY2_PASS__
+    obfs: salamander
+    obfs-password: __OBFS_PASS__
+    sni: __HY2_DOMAIN__
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "__NAME_TAG__"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择
+EOF
+           
+           # 执行变量替换
+           NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
+           IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
+           PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
+           PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
+           OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
+           
+           sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
+               -e "s@__SELECTED_IP__@${IP_ESC}@g" \
+               -e "s@__HY2_PORT__@${PORT_ESC}@g" \
+               -e "s@__HY2_PASS__@${PASS_ESC}@g" \
+               -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
+               -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
+               "${TMPF}" > "${TARGET}"
+           rm -f "${TMPF}"
+           
+           echo "[OK] Clash 订阅配置已更新为新域名: ${HY2_DOMAIN}"
+         fi
+         
+         # 重新等待证书申请
+         TRIES=0
+         ACME_OK=0
+         while [ $TRIES -lt 12 ]; do
+           if journalctl -u hysteria-server --no-pager -n 100 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
+             ACME_OK=1
+             echo "[OK] 域名切换后证书申请成功"
+             break
+           fi
+           sleep 5
+           TRIES=$((TRIES+1))
+         done
+         break
+      else
+        echo "[WARN] ${service} 解析验证失败，尝试下一个服务"
+      fi
+    done
+    
+    if [ "$SWITCHED" -eq 0 ]; then
+      echo "[ERROR] 无法找到可用的备用域名服务"
+    fi
   fi
-  echo "[OK] ACME 证书（或相关 acme 日志）已检测到"
+
+  if [ "$ACME_OK" -ne 1 ] && [ "$RATE_LIMITED" -eq 0 ]; then
+    echo "[WARN] 未检测到 ACME 成功日志，但可能证书已申请成功。检查日志详情："
+    journalctl -u hysteria-server -n 50 --no-pager | grep -E -i "(acme|certificate|tls-alpn|http-01|challenge|429|rate.?limit)" || true
+    echo "[INFO] 继续执行，证书可能已成功获取"
+  elif [ "$ACME_OK" -eq 1 ]; then
+    echo "[OK] ACME 证书申请成功检测到"
+  fi
 else
   echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
 fi
+
+setup_auto_reboot_cron
 
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
 
 # ===========================
-# 9) 构造 hysteria2 URI（URLEncode 关键字段）
+# 9) 构造 hysteria2 URI（URLEncode 关键字段，并处理空 pin）
 # ===========================
+# 确保 PIN_SHA256 非空（若空则用空字符串）
+if [ -z "${PIN_SHA256:-}" ]; then
+  PIN_SHA256=""
+fi
+
 PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$HY2_PASS")"
 OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$OBFS_PASS")"
 NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$NAME_TAG")"
@@ -220,175 +588,79 @@ echo "======================================="
 echo
 
 # ===========================
-# 10) 生成更全面的规则模式友好 Clash 订阅
-# （包含更多流媒体、游戏、VoIP、金融、社交、端口规则等）
+# 10) 生成 ACL4SSR 规则的 Clash 订阅（模板写入 + 安全替换）
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
+
 cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
-# Auto-generated comprehensive Clash subscription (rules-mode friendly)
-# Replace Proxy group selection to your node after importing.
-
-proxies:
-  - type: hysteria2
-    name: ${NAME_TAG}
-    server: ${SELECTED_IP}
-    port: ${HY2_PORT}
-    password: ${HY2_PASS}
-    obfs: salamander
-    obfs-password: ${OBFS_PASS}
-    sni: ${HY2_DOMAIN}
-
-proxy-groups:
-  - name: Proxy
-    type: select
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-  - name: Auto
-    type: url-test
-    url: 'http://www.gstatic.com/generate_204'
-    interval: 180
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-  - name: Stream
-    type: select
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-  - name: Game
-    type: select
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
-
-  - name: VoIP
-    type: select
-    proxies:
-      - ${NAME_TAG}
-      - DIRECT
+port: 7890
+socks-port: 7891
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
 
 dns:
   enable: true
   listen: 0.0.0.0:53
-  enhanced-mode: fake-ip
   default-nameserver:
     - 223.5.5.5
-    - 1.1.1.1
+    - 8.8.8.8
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
   nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
-  fallback:
-    - https://dns.google/dns-query
-    - https://1.0.0.1/dns-query
-  use-hosts: true
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
 
-# Rules - comprehensive
+proxies:
+  - name: "__NAME_TAG__"
+    type: hysteria2
+    server: __SELECTED_IP__
+    port: __HY2_PORT__
+    password: __HY2_PASS__
+    obfs: salamander
+    obfs-password: __OBFS_PASS__
+    sni: __HY2_DOMAIN__
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "__NAME_TAG__"
+      - DIRECT
+
 rules:
-  # Local / RFC1918
-  - IP-CIDR,10.0.0.0/8,DIRECT
-  - IP-CIDR,172.16.0.0/12,DIRECT
-  - IP-CIDR,192.168.0.0/16,DIRECT
-  - IP-CIDR,127.0.0.0/8,DIRECT
-  - IP-CIDR,169.254.0.0/16,DIRECT
-
-  # Local names
-  - DOMAIN-SUFFIX,local,DIRECT
-  - DOMAIN-SUFFIX,localhost,DIRECT
-
-  # Common China services / CDNs (direct)
-  - DOMAIN-SUFFIX,baidu.com,DIRECT
-  - DOMAIN-SUFFIX,qq.com,DIRECT
-  - DOMAIN-SUFFIX,taobao.com,DIRECT
-  - DOMAIN-SUFFIX,tmall.com,DIRECT
-  - DOMAIN-SUFFIX,tencent.com,DIRECT
-  - DOMAIN-SUFFIX,alipay.com,DIRECT
-  - DOMAIN-SUFFIX,aliyun.com,DIRECT
-  - DOMAIN-SUFFIX,iqiyi.com,DIRECT
-  - DOMAIN-SUFFIX,youku.com,DIRECT
-
-  # System / management ports
-  - PORT,22,DIRECT
-  - PORT,80,DIRECT
-  - PORT,443,DIRECT
-  - PORT,8080,DIRECT
-
-  # --- Stream / Video services (prefer proxy for better geo) ---
-  - DOMAIN-KEYWORD,netflix,Stream
-  - DOMAIN-KEYWORD,disney,Stream
-  - DOMAIN-KEYWORD,hulu,Stream
-  - DOMAIN-KEYWORD,primevideo,Stream
-  - DOMAIN-KEYWORD,youtube,Stream
-  - DOMAIN-KEYWORD,twitch,Stream
-  - DOMAIN-KEYWORD,spotify,Stream
-  - DOMAIN-KEYWORD,cdn,direct
-  # map Stream group to Proxy by default (user can choose)
-  - MATCH,Stream
-
-  # --- Gaming / Platforms ---
-  - DOMAIN-SUFFIX,steamcommunity.com,Game
-  - DOMAIN-SUFFIX,steampowered.com,Game
-  - DOMAIN-SUFFIX,epicgames.com,Game
-  - DOMAIN-KEYWORD,playstation,Game
-  - DOMAIN-KEYWORD,xbox,Game
-  - DOMAIN-KEYWORD,nintendo,Game
-
-  # Gaming ports (UDP heavy)
-  - PORT,3074,Game
-  - PORT,3478-3480,Game
-  - PORT,27014-27050,Game
-  - PORT,3659,Game
-  - PORT,25565,Game
-
-  # --- VoIP / WebRTC / STUN/TURN ---
-  - DOMAIN-KEYWORD,zoom,VoIP
-  - DOMAIN-KEYWORD,skype,VoIP
-  - DOMAIN-KEYWORD,discord,VoIP
-  - DOMAIN-KEYWORD,teams,VoIP
-  - PORT,3478-3481,VoIP
-  - PORT,19302,VoIP
-
-  # --- Banking / Finance (force direct for some local banks) ---
-  - DOMAIN-KEYWORD,bank,DIRECT
-  - DOMAIN-KEYWORD,finance,DIRECT
-
-  # --- Social & Messaging (often need proxy in restricted regions) ---
-  - DOMAIN-KEYWORD,facebook,Proxy
-  - DOMAIN-KEYWORD,instagram,Proxy
-  - DOMAIN-KEYWORD,twitter,Proxy
-  - DOMAIN-KEYWORD,wechat,DIRECT
-  - DOMAIN-KEYWORD,telegram,Proxy
-  - DOMAIN-KEYWORD,whatsapp,Proxy
-
-  # --- P2P / Torrent (optional: comment/uncomment) ---
-  # - DOMAIN-KEYWORD,torrent,Proxy
-  # - PORT,6881-6999,Proxy
-
-  # --- Geo rules ---
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
   - GEOIP,CN,DIRECT
-
-  # Final fallback: most traffic should go through Proxy (Rule mode will work reliably)
-  - MATCH,Proxy
+  - MATCH,🚀 节点选择
 EOF
 
-# replace template variables safely using python to avoid quoting issues
-python3 - <<PY
-import os
-p = os.environ.get("CLASH_OUT_PATH") + ".tmp"
-s = open(p,'r',encoding='utf-8').read()
-s = s.replace('${NAME_TAG}', os.environ.get('NAME_TAG'))
-s = s.replace('${SELECTED_IP}', os.environ.get('SELECTED_IP'))
-s = s.replace('${HY2_PORT}', os.environ.get('HY2_PORT'))
-s = s.replace('${HY2_PASS}', os.environ.get('HY2_PASS'))
-s = s.replace('${OBFS_PASS}', os.environ.get('OBFS_PASS'))
-s = s.replace('${HY2_DOMAIN}', os.environ.get('HY2_DOMAIN'))
-open(os.environ.get("CLASH_OUT_PATH"),'w',encoding='utf-8').write(s)
-os.remove(os.environ.get("CLASH_OUT_PATH") + ".tmp")
-print("[OK] Comprehensive Clash subscription written to:", os.environ.get("CLASH_OUT_PATH"))
-PY
+# perform safe substitutions
+TMPF="${CLASH_OUT_PATH}.tmp"
+TARGET="${CLASH_OUT_PATH}"
+
+NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
+IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
+PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
+PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
+OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
+DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
+
+sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
+    -e "s@__SELECTED_IP__@${IP_ESC}@g" \
+    -e "s@__HY2_PORT__@${PORT_ESC}@g" \
+    -e "s@__HY2_PASS__@${PASS_ESC}@g" \
+    -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
+    -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
+    "${TMPF}" > "${TARGET}"
+rm -f "${TMPF}"
+
+echo "[OK] Clash 订阅已写入：${TARGET}"
 
 # ===========================
 # 11) 配置 nginx 提供订阅
@@ -417,5 +689,4 @@ systemctl restart nginx
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo
-echo "提示：导入后请在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点；"
-echo "如果某服务仍不可用，把该服务的域名/端口/具体错误贴过来，我会把规则继续补齐。"
+echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
