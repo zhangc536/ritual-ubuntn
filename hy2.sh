@@ -19,6 +19,121 @@ escape_for_sed() {
 }
 
 # ===========================
+# helper: 定义定时维护任务（每7天清缓存+硬重启）
+# ===========================
+setup_auto_reboot_cron() {
+  # 可通过 ENABLE_AUTO_REBOOT_CACHE=0 关闭
+  if [ "${ENABLE_AUTO_REBOOT_CACHE:-1}" != "1" ]; then
+    echo "[INFO] 自动维护任务已禁用（ENABLE_AUTO_REBOOT_CACHE=0）"
+    return 0
+  fi
+
+  # 解析命令绝对路径，确保可用
+  local SHUTDOWN_BIN=""
+  if [ -x /sbin/shutdown ]; then
+    SHUTDOWN_BIN="/sbin/shutdown"
+  elif [ -x /usr/sbin/shutdown ]; then
+    SHUTDOWN_BIN="/usr/sbin/shutdown"
+  elif command -v shutdown >/dev/null 2>&1; then
+    SHUTDOWN_BIN="$(command -v shutdown)"
+  else
+    echo "[ERROR] 未找到 shutdown 命令，无法设置硬重启任务"
+    return 1
+  fi
+
+  local SYNC_BIN=""
+  if [ -x /usr/bin/sync ]; then
+    SYNC_BIN="/usr/bin/sync"
+  elif command -v sync >/dev/null 2>&1; then
+    SYNC_BIN="$(command -v sync)"
+  else
+    echo "[ERROR] 未找到 sync 命令，无法设置缓存清理任务"
+    return 1
+  fi
+
+  local DROP_CACHES="/proc/sys/vm/drop_caches"
+  if [ ! -e "$DROP_CACHES" ]; then
+    echo "[WARN] 未找到 $DROP_CACHES，内存缓存清理可能无法执行"
+  elif [ ! -w "$DROP_CACHES" ]; then
+    echo "[WARN] 无法写入 $DROP_CACHES，请确保以 root 运行"
+  fi
+
+  local CRON_LINE="0 3 */7 * * ${SYNC_BIN} && echo 3 > ${DROP_CACHES} && ${SHUTDOWN_BIN} -r now"
+
+  # 确保 cron 服务可用
+  if ! command -v crontab >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "[INFO] 未检测到 crontab，尝试安装 cron..."
+      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y cron >/dev/null 2>&1 || true
+    else
+      echo "[WARN] 未找到 crontab 命令且无法自动安装 cron。请手动安装后重试。"
+    fi
+  fi
+
+  # 尝试启动并设置 cron 服务
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now cron >/dev/null 2>&1 || true
+    if ! systemctl is-active --quiet cron; then
+      echo "[WARN] cron 服务未处于 active 状态，请检查：systemctl status cron"
+    fi
+  else
+    service cron start >/dev/null 2>&1 || true
+  fi
+
+  if command -v crontab >/dev/null 2>&1; then
+    # 仅在不存在时添加，保证幂等
+    local EXISTING
+    EXISTING="$(crontab -l 2>/dev/null || true)"
+    if ! printf "%s\n" "$EXISTING" | grep -Fq "$CRON_LINE"; then
+      local TMP_CRON
+      TMP_CRON="$(mktemp)"
+      printf "%s\n" "$EXISTING" >"$TMP_CRON"
+      printf "%s\n" "$CRON_LINE" >>"$TMP_CRON"
+      crontab "$TMP_CRON"
+      rm -f "$TMP_CRON"
+      echo "[OK] 已添加 root 定时任务：每 7 天 03:00 清缓存并重启"
+    else
+      echo "[INFO] root 定时任务已存在，跳过添加"
+    fi
+
+    # 就绪确认：确认已写入 crontab
+    if crontab -l 2>/dev/null | grep -Fq "$CRON_LINE"; then
+      echo "[OK] 硬重启就绪：crontab 已写入，命令路径: ${SYNC_BIN}, ${SHUTDOWN_BIN}"
+    fi
+  fi
+}
+
+# ===========================
+# 模式选择：1 全新安装；2 仅添加维护任务
+# 可用环境变量 SCRIPT_MODE=1/2 跳过交互
+# ===========================
+SCRIPT_MODE="${SCRIPT_MODE:-}"
+if [ -z "$SCRIPT_MODE" ]; then
+  if [ -t 0 ]; then
+    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每7天自动清缓存+硬重启 [默认1]: " SCRIPT_MODE || true
+  else
+    SCRIPT_MODE="1"
+  fi
+fi
+
+case "${SCRIPT_MODE}" in
+  2)
+    echo "[INFO] 选择模式 2：仅添加每7天自动清缓存+硬重启"
+    ENABLE_AUTO_REBOOT_CACHE="${ENABLE_AUTO_REBOOT_CACHE:-1}"
+    setup_auto_reboot_cron
+    echo "[OK] 维护任务已添加，脚本结束。"
+    exit 0
+    ;;
+  1|"")
+    echo "[INFO] 选择模式 1：全新安装"
+    ;;
+  *)
+    echo "[WARN] 无效选择（${SCRIPT_MODE}），默认使用模式 1：全新安装"
+    ;;
+esac
+
+# ===========================
 # 0) 获取公网 IPv4
 # ===========================
 SELECTED_IP="$(ip -4 addr show scope global | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1 || true)"
@@ -445,6 +560,8 @@ EOF
 else
   echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
 fi
+
+setup_auto_reboot_cron
 
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
