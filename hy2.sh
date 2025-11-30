@@ -19,7 +19,7 @@ escape_for_sed() {
 }
 
 # ===========================
-# helper: 定义定时维护任务（每7天清缓存+硬重启）
+# helper: 定义定时维护任务（每天清缓存+硬重启）
 # ===========================
 setup_auto_reboot_cron() {
   # 可通过 ENABLE_AUTO_REBOOT_CACHE=0 关闭
@@ -58,7 +58,7 @@ setup_auto_reboot_cron() {
     echo "[WARN] 无法写入 $DROP_CACHES，请确保以 root 运行"
   fi
 
-  local CRON_LINE="0 3 */7 * * ${SYNC_BIN} && echo 3 > ${DROP_CACHES} && ${SHUTDOWN_BIN} -r now"
+  local CRON_LINE="0 3 * * * ${SYNC_BIN} && echo 3 > ${DROP_CACHES} && ${SHUTDOWN_BIN} -r now"
 
   # 确保 cron 服务可用
   if ! command -v crontab >/dev/null 2>&1; then
@@ -92,7 +92,7 @@ setup_auto_reboot_cron() {
       printf "%s\n" "$CRON_LINE" >>"$TMP_CRON"
       crontab "$TMP_CRON"
       rm -f "$TMP_CRON"
-      echo "[OK] 已添加 root 定时任务：每 7 天 03:00 清缓存并重启"
+      echo "[OK] 已添加 root 定时任务：每天 03:00 清缓存并重启"
     else
       echo "[INFO] root 定时任务已存在，跳过添加"
     fi
@@ -111,7 +111,7 @@ setup_auto_reboot_cron() {
 SCRIPT_MODE="${SCRIPT_MODE:-}"
 if [ -z "$SCRIPT_MODE" ]; then
   if [ -t 0 ]; then
-    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每7天自动清缓存+硬重启 [默认1]: " SCRIPT_MODE || true
+    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每天自动清缓存+硬重启 [默认1]: " SCRIPT_MODE || true
   else
     SCRIPT_MODE="1"
   fi
@@ -119,7 +119,7 @@ fi
 
 case "${SCRIPT_MODE}" in
   2)
-    echo "[INFO] 选择模式 2：仅添加每7天自动清缓存+硬重启"
+    echo "[INFO] 选择模式 2：仅添加每天自动清缓存+硬重启"
     ENABLE_AUTO_REBOOT_CACHE="${ENABLE_AUTO_REBOOT_CACHE:-1}"
     setup_auto_reboot_cron
     echo "[OK] 维护任务已添加，脚本结束。"
