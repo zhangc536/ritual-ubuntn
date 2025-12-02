@@ -107,6 +107,7 @@ write_hysteria_config_for_port() {
   if [ "$use_tls" = "1" ]; then
     cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
+protocol: udp
 
 auth:
   type: password
@@ -125,6 +126,7 @@ EOF
     mkdir -p /acme/autocert
     cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
+protocol: udp
 
 auth:
   type: password
@@ -152,6 +154,7 @@ write_hysteria_main_config() {
   if [ "$use_tls" = "1" ]; then
     cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
+protocol: udp
 
 auth:
   type: password
@@ -169,6 +172,7 @@ EOF
   else
     cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
+protocol: udp
 
 auth:
   type: password
@@ -226,10 +230,15 @@ SVC
 # ---- helper: 启动指定端口的实例 ----
 start_hysteria_instance() {
   local port="$1"
-  systemctl enable --now "hysteria-server@${port}" || true
-  if ! systemctl is-active --quiet "hysteria-server@${port}"; then
-    echo "[WARN] hysteria-server@${port} 未处于 active 状态，输出最近日志以诊断："
-    journalctl -u "hysteria-server@${port}" -n 50 --no-pager 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now "hysteria-server@${port}" || true
+    if ! systemctl is-active --quiet "hysteria-server@${port}"; then
+      echo "[WARN] hysteria-server@${port} 未处于 active 状态，输出最近日志以诊断："
+      journalctl -u "hysteria-server@${port}" -n 50 --no-pager 2>/dev/null || true
+      start_port_service_direct "$port"
+    fi
+  else
+    start_port_service_direct "$port"
   fi
 }
 
@@ -263,14 +272,45 @@ ensure_udp_ports_open() {
 check_udp_listening() {
   local port="$1"
   if command -v ss >/dev/null 2>&1; then
-    ss -lunp | grep -E ":${port}\b" || true
+    ss -lunp | grep -E ":${port}\\b" || true
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -anu | grep -E "[\.:]${port}\b" || true
+    netstat -anu | grep -E "[\\.:]${port}\\b" || true
   elif command -v lsof >/dev/null 2>&1; then
     lsof -nP -iUDP:${port} || true
   else
     echo "[WARN] 缺少 ss/netstat/lsof，无法检查端口 ${port} 的监听状态"
   fi
+}
+
+# ---- helper: 打印 hysteria 进程信息 ----
+print_hysteria_process_info() {
+  echo "=== 进程检查（hysteria） ==="
+  command -v which >/dev/null 2>&1 && which hysteria || true
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -a hysteria || true
+  elif command -v ps >/dev/null 2>&1; then
+    ps aux | grep -E "[h]ysteria" || true
+  else
+    echo "[WARN] 缺少 pgrep/ps，无法打印进程信息"
+  fi
+}
+
+# ---- helper: 直接模式启动（无 systemd 或 systemd 启动失败） ----
+start_main_service_direct() {
+  mkdir -p /var/log /var/run
+  echo "[*] 以直接模式启动主服务（无 systemd）..."
+  nohup /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml >/var/log/hysteria-main.log 2>&1 &
+  echo $! >/var/run/hysteria-main.pid
+  sleep 1
+}
+
+start_port_service_direct() {
+  local port="$1"
+  mkdir -p /var/log /var/run
+  echo "[*] 以直接模式启动端口 ${port} 服务（无 systemd）..."
+  nohup /usr/local/bin/hysteria server -c "/etc/hysteria/config-${port}.yaml" >/var/log/hysteria-${port}.log 2>&1 &
+  echo $! >/var/run/hysteria-${port}.pid
+  sleep 1
 }
 
 # ---- helper: 开放 TCP 端口（用于 ACME 的 80/tcp） ----
@@ -1073,12 +1113,17 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   # 申请 ACME 前确保 80/tcp 可用并已放行
   ensure_port_80_available
 fi
-systemctl enable --now hysteria-server
-sleep 3
-systemctl restart hysteria-server || true
-if ! systemctl is-active --quiet hysteria-server; then
-  echo "[WARN] hysteria-server 未处于 active 状态，输出最近日志以诊断："
-  journalctl -u hysteria-server -n 80 --no-pager 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable --now hysteria-server || true
+  sleep 2
+  systemctl restart hysteria-server || true
+  if ! systemctl is-active --quiet hysteria-server; then
+    echo "[WARN] hysteria-server 未处于 active 状态，输出最近日志以诊断："
+    journalctl -u hysteria-server -n 80 --no-pager 2>/dev/null || true
+    start_main_service_direct
+  fi
+else
+  start_main_service_direct
 fi
 
 # 启动额外端口实例（需要 /acme 证书）
@@ -1319,6 +1364,7 @@ fi
 
 setup_auto_reboot_cron
 
+print_hysteria_process_info
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 check_udp_listening "$HY2_PORT"
 if [ -n "${HY2_PORTS:-}" ]; then
@@ -1565,6 +1611,19 @@ generate_self_signed_cert() {
   local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
   local ip="$SELECTED_IP"
   mkdir -p /acme/shared
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "[*] 未检测到 openssl，尝试自动安装..."
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y openssl >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y openssl >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y openssl >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache openssl >/dev/null 2>&1 || true
+    fi
+  fi
   if command -v openssl >/dev/null 2>&1; then
     echo "[*] 生成自签证书用于临时启动..."
     # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
