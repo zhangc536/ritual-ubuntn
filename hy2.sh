@@ -122,6 +122,7 @@ tls:
   key: ${USE_KEY_PATH}
 EOF
   else
+    mkdir -p /acme/autocert
     cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
 
@@ -137,6 +138,7 @@ obfs:
 acme:
   domains:
     - ${HY2_DOMAIN}
+  dir: /acme/autocert
   disable_http_challenge: false
   disable_tlsalpn_challenge: true
 EOF
@@ -168,6 +170,32 @@ SVC
 start_hysteria_instance() {
   local port="$1"
   systemctl enable --now "hysteria-server@${port}" || true
+}
+
+# ---- helper: 开放 UDP 端口（firewalld 或 ufw 若存在） ----
+ensure_udp_ports_open() {
+  local list_csv="$1"
+  local opened=0
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    local changed=0
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      firewall-cmd --query-port="${pt}/udp" >/dev/null 2>&1 || { firewall-cmd --add-port="${pt}/udp" --permanent >/dev/null 2>&1 && changed=1; }
+    done
+    if [ "$changed" -eq 1 ]; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
+    echo "[OK] firewalld 已放行指定 UDP 端口"
+    opened=1
+  elif command -v ufw >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      ufw status 2>/dev/null | grep -q "${pt}/udp" || ufw allow "${pt}/udp" >/dev/null 2>&1 || true
+    done
+    echo "[OK] ufw 已放行指定 UDP 端口"
+    opened=1
+  fi
+  if [ "$opened" -eq 0 ]; then
+    echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 UDP 端口。"
+  fi
 }
 
 # ---- helper: 在 ACME 成功后尝试从常见路径导入主服务证书 ----
@@ -514,6 +542,7 @@ EOF
     done
   fi
 else
+  mkdir -p /acme/autocert
   cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
 
@@ -529,6 +558,7 @@ obfs:
 acme:
   domains:
     - ${HY2_DOMAIN}
+  dir: /acme/autocert
   disable_http_challenge: false
   disable_tlsalpn_challenge: true
 EOF
@@ -558,6 +588,7 @@ SVC
 systemctl daemon-reload
 systemctl enable --now hysteria-server
 sleep 3
+systemctl restart hysteria-server || true
 
 # 启动额外端口实例（需要 /acme 证书）
 if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
@@ -568,6 +599,7 @@ if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
       start_hysteria_instance "$pt"
     fi
   done
+  ensure_udp_ports_open "$PORT_LIST_CSV"
 fi
 
 
@@ -782,17 +814,26 @@ EOF
     echo "[INFO] 继续执行，证书可能已成功获取"
   elif [ "$ACME_OK" -eq 1 ]; then
     echo "[OK] ACME 证书申请成功检测到"
-    # 若启用多端口，尝试从主服务导入证书并启动多实例
+    # 若启用多端口，启动多实例（优先导入主证书；否则共享 ACME 缓存目录）
     if [ -n "${HY2_PORTS:-}" ]; then
+      ensure_systemd_template
+      IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+      # 尝试导入主证书
       if try_import_main_cert_shared; then
-        ensure_systemd_template
-        IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-        for pt in "${ports_all[@]}"; do
-          [ "$pt" = "$HY2_PORT" ] && continue
-          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
-          start_hysteria_instance "$pt"
-        done
+        use_tls_for_ports=1
+      else
+        use_tls_for_ports=0
       fi
+      for pt in "${ports_all[@]}"; do
+        [ "$pt" = "$HY2_PORT" ] && continue
+        if [ "$use_tls_for_ports" -eq 1 ]; then
+          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
+        else
+          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "0"
+        fi
+        start_hysteria_instance "$pt"
+      done
+      ensure_udp_ports_open "$PORT_LIST_CSV"
     fi
   fi
 else
