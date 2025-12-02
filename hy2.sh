@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# =============================================================
+# 脚本顺序概览（执行主流程）：
+#  0) 选择模式（全新安装 / 仅维护任务）
+#  1) 获取公网 IPv4
+#  2) 安装依赖（如缺失）
+#  3) 生成域名（sslip.io -> nip.io -> xip.io）
+#  4) 安装 hysteria 二进制（若不存在）
+#  5) 生成主/多端口密码与端口列表（如未提供）
+#  6) 检查 /acme 现有证书；否则准备 ACME（并确保 80/tcp 可用）
+#  7) 写主端口与多端口配置（TLS 或 ACME）并启动（systemd 或直接模式回退）
+#  8) 等待 ACME 完成，尝试从常见路径导入证书（Nginx/Apache/Caddy/Traefik 等）
+#  9) 恢复 80/tcp 上被暂时停止的服务
+# 10) 打印进程与监听检查、构造 URI、生成 Clash 订阅并通过 Nginx 提供
+#
+# 说明：所有 helper 函数在前置定义；主流程按以上顺序执行，避免“未定义函数”或“端口占用”导致失败。
+# =============================================================
+
 # ===== 可改参数 =====
 HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
 HY2_PORTS="${HY2_PORTS:-}"            # 多端口（逗号分隔，例如 8443,8444,8445）
@@ -488,6 +505,40 @@ try_import_main_cert_shared() {
     [ -n "$cert_pub_hash" ] && [ -n "$key_pub_hash" ] && [ "$cert_pub_hash" = "$key_pub_hash" ]
   }
 
+  # 在 /acme/shared 放置证书与私钥：优先使用符号链接以跟随轮转；必要时回退复制
+  link_or_copy() {
+    local src="$1" dst="$2"
+    ln -sf "$src" "$dst" 2>/dev/null || cp -f "$src" "$dst" 2>/dev/null || cat "$src" >"$dst"
+  }
+
+  place_cert_and_key() {
+    local cert_src="$1" key_src="$2"
+    mkdir -p /acme/shared
+    local cert_dir
+    cert_dir="$(dirname "$cert_src")"
+    if [ -f "$cert_dir/fullchain.pem" ]; then
+      link_or_copy "$cert_dir/fullchain.pem" /acme/shared/fullchain.pem
+      echo "[INFO] 使用符号链接/复制指向源 fullchain.pem，以跟随上游轮转"
+    else
+      # 若发现 chain.pem，但无 fullchain，尝试合并；否则直接链接/复制源证书
+      if [ -f "$cert_dir/chain.pem" ]; then
+        if cat "$cert_src" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem 2>/dev/null; then
+          echo "[INFO] 源路径无 fullchain.pem，已合并 cert+chain 到 /acme/shared/fullchain.pem（轮转后需重跑脚本以更新）"
+        else
+          link_or_copy "$cert_src" /acme/shared/fullchain.pem
+          echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
+        fi
+      else
+        link_or_copy "$cert_src" /acme/shared/fullchain.pem
+        echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
+      fi
+    fi
+    link_or_copy "$key_src" /acme/shared/privkey.pem
+    USE_EXISTING_CERT=1
+    USE_CERT_PATH="/acme/shared/fullchain.pem"
+    USE_KEY_PATH="/acme/shared/privkey.pem"
+  }
+
   local found_cert="" found_key=""
   for d in "${candidates[@]}"; do
     [ -d "$d" ] || continue
@@ -519,19 +570,7 @@ try_import_main_cert_shared() {
     done
 
     if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
-      mkdir -p /acme/shared
-      # 若存在 chain.pem，优先构造 fullchain
-      local cert_dir
-      cert_dir="$(dirname "$found_cert")"
-      if [ -f "$cert_dir/chain.pem" ]; then
-        cat "$found_cert" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem
-      else
-        cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
-      fi
-      cp -f "$found_key" /acme/shared/privkey.pem 2>/dev/null || cat "$found_key" > /acme/shared/privkey.pem
-      USE_EXISTING_CERT=1
-      USE_CERT_PATH="/acme/shared/fullchain.pem"
-      USE_KEY_PATH="/acme/shared/privkey.pem"
+      place_cert_and_key "$found_cert" "$found_key"
       echo "[OK] 已从主服务导入证书到 /acme/shared（校验通过），用于多端口实例"
       return 0
     fi
@@ -557,17 +596,7 @@ try_import_main_cert_shared() {
       [ -n "$found_cert" ] && break
     done
     if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
-      mkdir -p /acme/shared
-      cert_dir="$(dirname "$found_cert")"
-      if [ -f "$cert_dir/chain.pem" ]; then
-        cat "$found_cert" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem
-      else
-        cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
-      fi
-      cp -f "$found_key" /acme/shared/privkey.pem 2>/dev/null || cat "$found_key" > /acme/shared/privkey.pem
-      USE_EXISTING_CERT=1
-      USE_CERT_PATH="/acme/shared/fullchain.pem"
-      USE_KEY_PATH="/acme/shared/privkey.pem"
+      place_cert_and_key "$found_cert" "$found_key"
       echo "[OK] 已从家目录 ACME 路径导入证书到 /acme/shared（校验通过）"
       return 0
     fi
@@ -606,13 +635,8 @@ try_import_from_nginx_configs() {
       fi
       [ -n "$k" ] || continue
       if verify_cert_key_pair "$c" "$k" "$dom"; then
-        mkdir -p /acme/shared
-        cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
-        cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
-        USE_EXISTING_CERT=1
-        USE_CERT_PATH="/acme/shared/fullchain.pem"
-        USE_KEY_PATH="/acme/shared/privkey.pem"
-        echo "[OK] 已从 Nginx 配置导入证书"
+        place_cert_and_key "$c" "$k"
+        echo "[OK] 已从 Nginx 配置导入证书（优先链接 fullchain 以跟随轮转）"
         return 0
       fi
     done
@@ -636,13 +660,8 @@ try_import_from_apache_configs() {
       done
       [ -n "$k" ] || continue
       if verify_cert_key_pair "$c" "$k" "$dom"; then
-        mkdir -p /acme/shared
-        cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
-        cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
-        USE_EXISTING_CERT=1
-        USE_CERT_PATH="/acme/shared/fullchain.pem"
-        USE_KEY_PATH="/acme/shared/privkey.pem"
-        echo "[OK] 已从 Apache 配置导入证书"
+        place_cert_and_key "$c" "$k"
+        echo "[OK] 已从 Apache 配置导入证书（优先链接 fullchain 以跟随轮转）"
         return 0
       fi
     done
@@ -662,13 +681,8 @@ try_import_from_caddy_storage() {
     local k="${c%.crt}.key"
     [ -f "$k" ] || continue
     if verify_cert_key_pair "$c" "$k" "$dom"; then
-      mkdir -p /acme/shared
-      cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
-      cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
-      USE_EXISTING_CERT=1
-      USE_CERT_PATH="/acme/shared/fullchain.pem"
-      USE_KEY_PATH="/acme/shared/privkey.pem"
-      echo "[OK] 已从 Caddy 存储导入证书"
+      place_cert_and_key "$c" "$k"
+      echo "[OK] 已从 Caddy 存储导入证书（优先链接 fullchain 以跟随轮转）"
       return 0
     fi
   done
@@ -730,6 +744,7 @@ PY
     USE_EXISTING_CERT=1
     USE_CERT_PATH="/acme/shared/fullchain.pem"
     USE_KEY_PATH="/acme/shared/privkey.pem"
+    echo "[OK] 已从 Traefik 导入证书到 /acme/shared（内容复制；若轮转需重跑脚本）"
     return 0
   fi
   return 1
@@ -1076,15 +1091,25 @@ if [ "$USE_EXISTING_CERT" -eq 1 ]; then
   echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
   start_additional_instances_with_tls
 else
+  # 默认禁用自签证书回退；如需启用可设置 DISABLE_SELF_SIGNED=0
+  DISABLE_SELF_SIGNED=${DISABLE_SELF_SIGNED:-1}
   if [ "$PORT80_FREE" -eq 1 ]; then
     write_hysteria_main_config 0
     echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
   else
-    echo "[WARN] 80/tcp 不可用且无现有证书，回退生成自签证书以启动主服务"
-    generate_self_signed_cert
-    write_hysteria_main_config 1
-    SELF_SIGNED_USED=1
-    echo "[OK] 已写入 hysteria 配置（使用自签证书）"
+    if [ "$DISABLE_SELF_SIGNED" -eq 1 ]; then
+      echo "[ERROR] 80/tcp 不可用且无现有证书，已禁用自签证书回退。"
+      echo "       请释放 80 端口或提供 /acme 证书后再运行。"
+      # 仍写入 ACME 配置，便于释放 80 后自动申请
+      write_hysteria_main_config 0
+      echo "[INFO] 已写入 ACME 配置，但启动可能失败，需释放 80/tcp。"
+    else
+      echo "[WARN] 80/tcp 不可用且无现有证书，启用自签回退以便临时启动"
+      generate_self_signed_cert
+      write_hysteria_main_config 1
+      SELF_SIGNED_USED=1
+      echo "[OK] 已写入 hysteria 配置（使用自签证书）"
+    fi
   fi
 fi
 
