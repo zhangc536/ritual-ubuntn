@@ -352,6 +352,14 @@ try_import_main_cert_shared() {
     "/etc/letsencrypt/live"
     "/etc/ssl"
     "/etc/nginx"
+    "/usr/local/etc/nginx"
+    "/etc/apache2"
+    "/etc/httpd"
+    "/etc/pki/tls"
+    "/etc/caddy"
+    "/var/lib/caddy"
+    "/etc/traefik"
+    "/var/lib/traefik"
   )
 
   # 证书域名/SAN 校验 + 私钥匹配校验
@@ -405,10 +413,10 @@ try_import_main_cert_shared() {
   for d in "${candidates[@]}"; do
     [ -d "$d" ] || continue
     # 在候选目录下尽可能多地找出证书/私钥候选
-    mapfile -t certs < <(find "$d" -maxdepth 6 -type f \( \
+    mapfile -t certs < <(find "$d" -maxdepth 6 \( -type f -o -type l \) \( \
       -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" -o -name "*.crt" -o -name "*.cer" \
     \) 2>/dev/null)
-    mapfile -t keys < <(find "$d" -maxdepth 6 -type f \( \
+    mapfile -t keys < <(find "$d" -maxdepth 6 \( -type f -o -type l \) \( \
       -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \
     \) 2>/dev/null)
 
@@ -418,7 +426,7 @@ try_import_main_cert_shared() {
       local base_dir
       base_dir="$(dirname "$c")"
       local k_same
-      k_same="$(find "$base_dir" -maxdepth 1 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
+      k_same="$(find "$base_dir" -maxdepth 1 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
       if [ -n "$k_same" ] && verify_cert_key_pair "$c" "$k_same" "$domain"; then
         found_cert="$c"; found_key="$k_same"; break
       fi
@@ -450,7 +458,201 @@ try_import_main_cert_shared() {
     fi
   done
 
+  # 额外扫描常见家目录 ACME 路径（若存在）
+  for d in /home/*/.acme.sh /home/*/.lego /home/*/.certbot /home/*/letsencrypt/live /var/www/cert; do
+    [ -d "$d" ] || continue
+    mapfile -t certs < <(find "$d" -maxdepth 4 \( -type f -o -type l \) \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" -o -name "*.crt" -o -name "*.cer" \) 2>/dev/null)
+    mapfile -t keys < <(find "$d" -maxdepth 4 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null)
+    for c in "${certs[@]}"; do
+      local base_dir k_same
+      base_dir="$(dirname "$c")";
+      k_same="$(find "$base_dir" -maxdepth 1 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
+      if [ -n "$k_same" ] && verify_cert_key_pair "$c" "$k_same" "$domain"; then
+        found_cert="$c"; found_key="$k_same"; break
+      fi
+      for k in "${keys[@]}"; do
+        if verify_cert_key_pair "$c" "$k" "$domain"; then
+          found_cert="$c"; found_key="$k"; break
+        fi
+      done
+      [ -n "$found_cert" ] && break
+    done
+    if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
+      mkdir -p /acme/shared
+      cert_dir="$(dirname "$found_cert")"
+      if [ -f "$cert_dir/chain.pem" ]; then
+        cat "$found_cert" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem
+      else
+        cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
+      fi
+      cp -f "$found_key" /acme/shared/privkey.pem 2>/dev/null || cat "$found_key" > /acme/shared/privkey.pem
+      USE_EXISTING_CERT=1
+      USE_CERT_PATH="/acme/shared/fullchain.pem"
+      USE_KEY_PATH="/acme/shared/privkey.pem"
+      echo "[OK] 已从家目录 ACME 路径导入证书到 /acme/shared（校验通过）"
+      return 0
+    fi
+  done
+
+  # 从 Nginx/Apache 配置提取证书路径并导入（若找到）
+  try_import_from_nginx_configs "$domain" && return 0 || true
+  try_import_from_apache_configs "$domain" && return 0 || true
+  try_import_from_caddy_storage "$domain" && return 0 || true
+  try_import_from_traefik_acme_json "$domain" && return 0 || true
+
   echo "[WARN] 未能定位主服务证书缓存文件，仍将仅运行主端口。若需多端口，请将证书放入 /acme/<dir>/fullchain.pem 与 privkey.pem。"
+  return 1
+}
+
+# ---- helper: 从 Nginx 配置导入证书 ----
+try_import_from_nginx_configs() {
+  local dom="$1"
+  local cfg_dirs=(
+    "/etc/nginx" "/usr/local/etc/nginx"
+  )
+  for cd in "${cfg_dirs[@]}"; do
+    [ -d "$cd" ] || continue
+    # 提取所有证书/密钥路径
+    mapfile -t cert_paths < <(grep -R -E "^\s*ssl_certificate\s+" "$cd" 2>/dev/null | awk '{print $2}' | sed 's/;\s*$//' | sort -u)
+    mapfile -t key_paths < <(grep -R -E "^\s*ssl_certificate_key\s+" "$cd" 2>/dev/null | awk '{print $2}' | sed 's/;\s*$//' | sort -u)
+    for c in "${cert_paths[@]}"; do
+      [ -f "$c" ] || continue
+      local k
+      # 同目录优先
+      k="$(dirname "$c")"; k="$k/privkey.pem"; [ -f "$k" ] || k=""
+      if [ -z "$k" ]; then
+        for kp in "${key_paths[@]}"; do
+          [ -f "$kp" ] && { k="$kp"; break; }
+        done
+      fi
+      [ -n "$k" ] || continue
+      if verify_cert_key_pair "$c" "$k" "$dom"; then
+        mkdir -p /acme/shared
+        cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
+        cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
+        USE_EXISTING_CERT=1
+        USE_CERT_PATH="/acme/shared/fullchain.pem"
+        USE_KEY_PATH="/acme/shared/privkey.pem"
+        echo "[OK] 已从 Nginx 配置导入证书"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# ---- helper: 从 Apache 配置导入证书 ----
+try_import_from_apache_configs() {
+  local dom="$1"
+  local cfg_dirs=("/etc/apache2" "/etc/httpd")
+  for cd in "${cfg_dirs[@]}"; do
+    [ -d "$cd" ] || continue
+    mapfile -t cert_paths < <(grep -R -E "^\s*SSLCertificateFile\s+" "$cd" 2>/dev/null | awk '{print $2}' | sort -u)
+    mapfile -t key_paths < <(grep -R -E "^\s*SSLCertificateKeyFile\s+" "$cd" 2>/dev/null | awk '{print $2}' | sort -u)
+    for c in "${cert_paths[@]}"; do
+      [ -f "$c" ] || continue
+      local k=""
+      for kp in "${key_paths[@]}"; do
+        [ -f "$kp" ] && { k="$kp"; break; }
+      done
+      [ -n "$k" ] || continue
+      if verify_cert_key_pair "$c" "$k" "$dom"; then
+        mkdir -p /acme/shared
+        cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
+        cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
+        USE_EXISTING_CERT=1
+        USE_CERT_PATH="/acme/shared/fullchain.pem"
+        USE_KEY_PATH="/acme/shared/privkey.pem"
+        echo "[OK] 已从 Apache 配置导入证书"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# ---- helper: 从 Caddy 存储导入证书 ----
+try_import_from_caddy_storage() {
+  local dom="$1"; local base="/var/lib/caddy/.local/share/caddy/certificates"
+  [ -d "$base" ] || return 1
+  mapfile -t certs < <(find "$base" -maxdepth 6 \( -type f -o -type l \) -name "*.crt" 2>/dev/null)
+  for c in "${certs[@]}"; do
+    local dname
+    dname="$(basename "$c" .crt)"
+    # 尝试按同名 key
+    local k="${c%.crt}.key"
+    [ -f "$k" ] || continue
+    if verify_cert_key_pair "$c" "$k" "$dom"; then
+      mkdir -p /acme/shared
+      cp -f "$c" /acme/shared/fullchain.pem 2>/dev/null || cat "$c" > /acme/shared/fullchain.pem
+      cp -f "$k" /acme/shared/privkey.pem 2>/dev/null || cat "$k" > /acme/shared/privkey.pem
+      USE_EXISTING_CERT=1
+      USE_CERT_PATH="/acme/shared/fullchain.pem"
+      USE_KEY_PATH="/acme/shared/privkey.pem"
+      echo "[OK] 已从 Caddy 存储导入证书"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---- helper: 从 Traefik acme.json 导入证书 ----
+try_import_from_traefik_acme_json() {
+  local dom="$1"; local json="/var/lib/traefik/acme.json"
+  [ -f "$json" ] || return 1
+  if ! command -v python3 >/dev/null 2>&1; then return 1; fi
+  python3 - "$json" "$dom" <<'PY' && exit 0 || exit 1
+import sys, json, base64
+path = sys.argv[1]
+dom = sys.argv[2]
+with open(path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+def iter_certs(d):
+    # Traefik 不同版本结构不同，尽量兼容
+    stores = []
+    for k in ('Certificates', 'Store', 'http', 'tls', 'store', 'acme'): 
+        v = d.get(k)
+        if isinstance(v, dict): d = v
+    # 最常见结构
+    for provider in d.values():
+        if isinstance(provider, dict):
+            for entry in provider.get('Certificates', []):
+                yield entry
+            # 可能的备用键
+            for entry in provider.get('Store', {}).get('Certificates', []):
+                yield entry
+itered = list(iter_certs(data))
+match = None
+for e in itered:
+    doms = []
+    if 'domain' in e:
+        if isinstance(e['domain'], dict):
+            doms.append(e['domain'].get('main'))
+            doms += e['domain'].get('sans', []) or []
+        else:
+            doms.append(e['domain'])
+    for d in doms:
+        if d == dom or (isinstance(d, str) and d.startswith('*.') and dom.endswith(d[2:])):
+            match = e; break
+    if match: break
+if not match:
+    sys.exit(1)
+cert_b64 = match.get('certificate')
+key_b64 = match.get('key')
+if not cert_b64 or not key_b64:
+    sys.exit(1)
+cert = base64.b64decode(cert_b64)
+key = base64.b64decode(key_b64)
+open('/acme/shared/fullchain.pem', 'wb').write(cert)
+open('/acme/shared/privkey.pem', 'wb').write(key)
+print('[OK] 已从 Traefik acme.json 导入证书到 /acme/shared')
+PY
+  if [ $? -eq 0 ]; then
+    USE_EXISTING_CERT=1
+    USE_CERT_PATH="/acme/shared/fullchain.pem"
+    USE_KEY_PATH="/acme/shared/privkey.pem"
+    return 0
+  fi
   return 1
 }
 
@@ -686,12 +888,22 @@ if ! command -v hysteria >/dev/null 2>&1; then
     aarch64|arm64) asset="hysteria-linux-arm64" ;;
     *) asset="hysteria-linux-amd64" ;;
   esac
-  url_latest="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
-  elif command -v wget >/dev/null 2>&1; then
-    wget -O /usr/local/bin/hysteria "$url_latest" || true
-  else
+  mkdir -p /usr/local/bin
+  url_default="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+  # 可通过环境变量指定镜像基地址（例如 ghproxy）：HYST_DOWNLOAD_BASE=https://ghproxy.com/https://github.com/apernet/hysteria/releases/latest/download
+  # 若未指定则使用默认 + 常见镜像回退
+  urls=()
+  if [ -n "${HYST_DOWNLOAD_BASE:-}" ]; then
+    urls+=("${HYST_DOWNLOAD_BASE%/}/${asset}")
+  fi
+  urls+=(
+    "$url_default"
+    "https://ghproxy.com/https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+    "https://download.fastgit.org/apernet/hysteria/releases/latest/download/${asset}"
+  )
+
+  # 安装下载工具（如缺失）
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
       apt-get update -y >/dev/null 2>&1 || true
       apt-get install -y curl >/dev/null 2>&1 || true
@@ -702,7 +914,21 @@ if ! command -v hysteria >/dev/null 2>&1; then
     elif command -v apk >/dev/null 2>&1; then
       apk add --no-cache curl >/dev/null 2>&1 || true
     fi
-    command -v curl >/dev/null 2>&1 && curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
+  fi
+
+  download_ok=0
+  for u in "${urls[@]}"; do
+    if command -v curl >/dev/null 2>&1; then
+      echo "[*] 尝试下载: $u"
+      curl -fL --connect-timeout 10 -m 60 "$u" -o /usr/local/bin/hysteria && download_ok=1 && break || true
+    fi
+    if [ "$download_ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
+      echo "[*] 尝试下载: $u"
+      wget -O /usr/local/bin/hysteria "$u" && download_ok=1 && break || true
+    fi
+  done
+  if [ "$download_ok" -ne 1 ]; then
+    echo "[ERROR] 无法下载 hysteria 二进制。请检查网络，或设置 HYST_DOWNLOAD_BASE 为镜像地址。"
   fi
   chmod +x /usr/local/bin/hysteria
   if ! /usr/local/bin/hysteria -v >/dev/null 2>&1; then
