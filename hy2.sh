@@ -678,38 +678,88 @@ echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
 # ===========================
 # 3) 安装 hysteria 二进制（若不存在）
 # ===========================
-if ! command -v hysteria >/dev/null 2>&1; then
+install_hysteria_binary() {
   echo "[*] 安装 hysteria ..."
-  arch="$(uname -m)"
+  local arch="$(uname -m)" asset="" bin="/usr/local/bin/hysteria"
   case "$arch" in
     x86_64|amd64) asset="hysteria-linux-amd64" ;;
     aarch64|arm64) asset="hysteria-linux-arm64" ;;
+    armv7l|armv7) asset="hysteria-linux-arm" ;;
+    i386|i686) asset="hysteria-linux-386" ;;
     *) asset="hysteria-linux-amd64" ;;
   esac
-  url_latest="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
-  elif command -v wget >/dev/null 2>&1; then
-    wget -O /usr/local/bin/hysteria "$url_latest" || true
-  else
-    if command -v apt-get >/dev/null 2>&1; then
-      apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y curl >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y curl >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y curl >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache curl >/dev/null 2>&1 || true
+
+  local url_main url_mirror url_version
+  url_main="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+  url_mirror="https://ghproxy.com/https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+  if [ -n "${HYSTERIA_VERSION:-}" ]; then
+    url_version="https://github.com/apernet/hysteria/releases/download/${HYSTERIA_VERSION}/${asset}"
+  fi
+  local override="${HYSTERIA_BIN_URL:-}"
+
+  fetch() {
+    local url="$1" out="$2"
+    [ -z "$url" ] && return 1
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --ipv4 "$url" -o "$out" 2>/dev/null || return 1
+    elif command -v wget >/dev/null 2>&1; then
+      wget --tries=3 --timeout=15 -O "$out" "$url" >/dev/null 2>&1 || return 1
+    else
+      if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y >/dev/null 2>&1 || true
+        apt-get install -y curl >/dev/null 2>&1 || true
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y curl >/dev/null 2>&1 || true
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y curl >/dev/null 2>&1 || true
+      elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache curl >/dev/null 2>&1 || true
+      fi
+      command -v curl >/dev/null 2>&1 || return 1
+      curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --ipv4 "$url" -o "$out" 2>/dev/null || return 1
     fi
-    command -v curl >/dev/null 2>&1 && curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
+    chmod +x "$out" 2>/dev/null || true
+    "$out" -v >/dev/null 2>&1
+  }
+
+  # 下载顺序：用户覆盖 > 指定版本 > 官方 latest > ghproxy 镜像
+  if [ -n "$override" ] && fetch "$override" "$bin"; then
+    echo "[OK] 通过覆盖 URL 安装 hysteria"
+    return 0
   fi
-  chmod +x /usr/local/bin/hysteria
-  if ! /usr/local/bin/hysteria -v >/dev/null 2>&1; then
-    echo "[ERROR] hysteria 二进制安装失败，请检查网络或手动安装 /usr/local/bin/hysteria"
-  else
-    echo "[OK] hysteria 安装完成"
+  if [ -n "$url_version" ] && fetch "$url_version" "$bin"; then
+    echo "[OK] 通过指定版本安装 hysteria (${HYSTERIA_VERSION})"
+    return 0
   fi
+  if fetch "$url_main" "$bin"; then
+    echo "[OK] 通过 GitHub latest 安装 hysteria"
+    return 0
+  fi
+  if fetch "$url_mirror" "$bin"; then
+    echo "[OK] 通过 ghproxy 镜像安装 hysteria"
+    return 0
+  fi
+
+  # 尝试 go 安装回退
+  if command -v go >/dev/null 2>&1; then
+    echo "[INFO] 使用 go 安装回退：go install github.com/apernet/hysteria@latest"
+    GO111MODULE=on go install -v github.com/apernet/hysteria@latest >/dev/null 2>&1 || true
+    if [ -x "${HOME}/go/bin/hysteria" ]; then
+      cp -f "${HOME}/go/bin/hysteria" "$bin" 2>/dev/null || true
+      chmod +x "$bin" 2>/dev/null || true
+      if "$bin" -v >/dev/null 2>&1; then
+        echo "[OK] 通过 go 安装 hysteria"
+        return 0
+      fi
+    fi
+  fi
+
+  echo "[ERROR] hysteria 二进制安装失败；可设置环境变量 HYSTERIA_BIN_URL 指定可达的下载地址，或手动放置到 $bin"
+  return 1
+}
+
+if ! command -v hysteria >/dev/null 2>&1; then
+  install_hysteria_binary || true
 fi
 
 # ===========================
