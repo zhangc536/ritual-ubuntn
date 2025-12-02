@@ -3,6 +3,7 @@ set -euo pipefail
 
 # ===== 可改参数 =====
 HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
+HY2_PORTS="${HY2_PORTS:-}"            # 多端口（逗号分隔，例如 8443,8444,8445）
 HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
 OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
 NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
@@ -16,6 +17,121 @@ HTTP_PORT="${HTTP_PORT:-8080}"
 escape_for_sed() {
   # read input as $1
   printf '%s' "$1" | sed -e 's/[\/&@]/\\&/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+}
+
+# ---- helper: 解析端口列表（HY2_PORTS 优先，其次 HY2_PORT） ----
+parse_port_list() {
+  local raw="${HY2_PORTS:-}"
+  local out=""
+  if [ -n "$raw" ]; then
+    IFS=',' read -r -a parts <<<"$raw"
+    for p in "${parts[@]}"; do
+      p="$(echo "$p" | tr -d ' ' )"
+      if echo "$p" | grep -Eq '^[0-9]{2,5}$'; then
+        case ",$out," in
+          *",$p,"*) ;;
+          *) out="${out:+$out,}$p" ;;
+        esac
+      fi
+    done
+  fi
+  if [ -z "$out" ]; then
+    out="$HY2_PORT"
+  fi
+  echo "$out"
+}
+
+# ---- helper: 为每端口生成凭据（若未提供） ----
+gen_credentials_for_ports() {
+  local list_csv="$1"
+  declare -gA PASS_MAP
+  declare -gA OBFS_MAP
+  IFS=',' read -r -a ports <<<"$list_csv"
+  for pt in "${ports[@]}"; do
+    local pass obfs
+    if [ "$pt" = "$HY2_PORT" ] && [ -n "${HY2_PASS:-}" ]; then
+      pass="$HY2_PASS"
+    else
+      pass="$(openssl rand -hex 16)"
+    fi
+    if [ "$pt" = "$HY2_PORT" ] && [ -n "${OBFS_PASS:-}" ]; then
+      obfs="$OBFS_PASS"
+    else
+      obfs="$(openssl rand -hex 8)"
+    fi
+    PASS_MAP[$pt]="$pass"
+    OBFS_MAP[$pt]="$obfs"
+  done
+}
+
+# ---- helper: 写单端口 hysteria 配置到 /etc/hysteria/config-<port>.yaml ----
+write_hysteria_config_for_port() {
+  local port="$1"; local pass="$2"; local obfsp="$3"; local use_tls="$4"
+  mkdir -p /etc/hysteria
+  if [ "$use_tls" = "1" ]; then
+    cat >"/etc/hysteria/config-${port}.yaml" <<EOF
+listen: :${port}
+
+auth:
+  type: password
+  password: ${pass}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${obfsp}
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+  else
+    cat >"/etc/hysteria/config-${port}.yaml" <<EOF
+listen: :${port}
+
+auth:
+  type: password
+  password: ${pass}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${obfsp}
+
+acme:
+  domains:
+    - ${HY2_DOMAIN}
+  disable_http_challenge: false
+  disable_tlsalpn_challenge: true
+EOF
+  fi
+}
+
+# ---- helper: systemd 模板服务（@）确保存在 ----
+ensure_systemd_template() {
+  cat >/etc/systemd/system/hysteria-server@.service <<'SVC'
+[Unit]
+Description=Hysteria Server (config-%i.yaml)
+After=network.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config-%i.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SVC
+  systemctl daemon-reload
+}
+
+# ---- helper: 启动指定端口的实例 ----
+start_hysteria_instance() {
+  local port="$1"
+  systemctl enable --now "hysteria-server@${port}" || true
 }
 
 # ===========================
@@ -251,6 +367,10 @@ if [ -z "${OBFS_PASS}" ]; then
   OBFS_PASS="$(openssl rand -hex 8)"
 fi
 
+# 解析端口列表并生成每端口凭据
+PORT_LIST_CSV="$(parse_port_list)"
+gen_credentials_for_ports "$PORT_LIST_CSV"
+
 # ===========================
 # 5) 在 /acme 下扫描子目录寻找 fullchain.pem + privkey.pem（优先使用）
 # ===========================
@@ -299,6 +419,15 @@ tls:
   key: ${USE_KEY_PATH}
 EOF
   echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
+  # 多端口：为额外端口写 TLS 配置文件
+  if [ -n "${HY2_PORTS:-}" ]; then
+    IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+    for pt in "${ports_all[@]}"; do
+      if [ "$pt" != "$HY2_PORT" ]; then
+        write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
+      fi
+    done
+  fi
 else
   cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
@@ -344,6 +473,18 @@ SVC
 systemctl daemon-reload
 systemctl enable --now hysteria-server
 sleep 3
+
+# 启动额外端口实例（需要 /acme 证书）
+if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
+  ensure_systemd_template
+  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+  for pt in "${ports_all[@]}"; do
+    if [ "$pt" != "$HY2_PORT" ]; then
+      start_hysteria_instance "$pt"
+    fi
+  done
+fi
+
 
 # ===========================
 # 8) 如果没有现有证书则等待 ACME 产生日志（最多 60 秒）
@@ -565,6 +706,15 @@ setup_auto_reboot_cron
 
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
 ss -lunp | grep -E ":${HY2_PORT}\b" || true
+if [ -n "${HY2_PORTS:-}" ]; then
+  echo "=== 监听检查（其他端口） ==="
+  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+  for pt in "${ports_all[@]}"; do
+    if [ "$pt" != "$HY2_PORT" ]; then
+      ss -lunp | grep -E ":${pt}\b" || true
+    fi
+  done
+fi
 
 # ===========================
 # 9) 构造 hysteria2 URI（URLEncode 关键字段，并处理空 pin）
@@ -586,6 +736,20 @@ echo "=========== HY2 节点（URI） ==========="
 echo "${URI}"
 echo "======================================="
 echo
+if [ -n "${HY2_PORTS:-}" ]; then
+  echo "=========== 其他端口（URI） ==========="
+  IFS=',' read -r -a print_ports <<<"$PORT_LIST_CSV"
+  for pt in "${print_ports[@]}"; do
+    if [ "$pt" = "$HY2_PORT" ]; then continue; fi
+    P_PASS="${PASS_MAP[$pt]}"; P_OBFS="${OBFS_MAP[$pt]}"
+    P_PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_PASS")"
+    P_OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_OBFS")"
+    P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    echo "$pt -> $P_URI"
+  done
+  echo "======================================="
+  echo
+fi
 
 # ===========================
 # 10) 生成 ACL4SSR 规则的 Clash 订阅（模板写入 + 安全替换）
@@ -662,6 +826,78 @@ rm -f "${TMPF}"
 
 echo "[OK] Clash 订阅已写入：${TARGET}"
 
+# 若启用多端口并且存在 /acme 证书，为每端口生成独立订阅文件
+if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
+  IFS=',' read -r -a clash_ports <<<"$PORT_LIST_CSV"
+  for pt in "${clash_ports[@]}"; do
+    [ "$pt" = "$HY2_PORT" ] && continue
+    local_tmp="${CLASH_WEB_DIR}/clash_${pt}.yaml.tmp"
+    local_target="${CLASH_WEB_DIR}/clash_${pt}.yaml"
+    cat >"${local_tmp}" <<'EOF'
+port: 7890
+socks-port: 7891
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  default-nameserver:
+    - 223.5.5.5
+    - 8.8.8.8
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+
+proxies:
+  - name: "__NAME_TAG__"
+    type: hysteria2
+    server: __SELECTED_IP__
+    port: __HY2_PORT__
+    password: __HY2_PASS__
+    obfs: salamander
+    obfs-password: __OBFS_PASS__
+    sni: __HY2_DOMAIN__
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "__NAME_TAG__"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,baidu,DIRECT
+  - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,qq,DIRECT
+  - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,alipay,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择
+EOF
+    NAME_ESC2="$(escape_for_sed "${NAME_TAG}")"
+    IP_ESC2="$(escape_for_sed "${SELECTED_IP}")"
+    PORT_ESC2="$(escape_for_sed "${pt}")"
+    PASS_ESC2="$(escape_for_sed "${PASS_MAP[$pt]}")"
+    OBFS_ESC2="$(escape_for_sed "${OBFS_MAP[$pt]}")"
+    DOMAIN_ESC2="$(escape_for_sed "${HY2_DOMAIN}")"
+    sed -e "s@__NAME_TAG__@${NAME_ESC2}@g" \
+        -e "s@__SELECTED_IP__@${IP_ESC2}@g" \
+        -e "s@__HY2_PORT__@${PORT_ESC2}@g" \
+        -e "s@__HY2_PASS__@${PASS_ESC2}@g" \
+        -e "s@__OBFS_PASS__@${OBFS_ESC2}@g" \
+        -e "s@__HY2_DOMAIN__@${DOMAIN_ESC2}@g" \
+        "${local_tmp}" > "${local_target}"
+    rm -f "${local_tmp}"
+    echo "[OK] Clash 订阅已写入：${local_target}"
+  done
+fi
+
 # ===========================
 # 11) 配置 nginx 提供订阅
 # ===========================
@@ -675,6 +911,11 @@ server {
     location /clash_subscription.yaml {
         default_type application/x-yaml;
         try_files /clash_subscription.yaml =404;
+    }
+    # 额外路由：提供每端口订阅文件 /clash_<port>.yaml
+    location ~ ^/clash_[0-9]+\.yaml$ {
+        default_type application/x-yaml;
+        try_files $uri =404;
     }
 
     access_log /var/log/nginx/clash_access.log;
