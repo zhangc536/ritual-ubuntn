@@ -4,6 +4,7 @@ set -euo pipefail
 # ===== 可改参数 =====
 HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
 HY2_PORTS="${HY2_PORTS:-}"            # 多端口（逗号分隔，例如 8443,8444,8445）
+HY2_PORT_COUNT="${HY2_PORT_COUNT:-}"  # 端口数量（若未提供 HY2_PORTS，则按数量从主端口递增）
 HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
 OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
 NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
@@ -16,7 +17,42 @@ HTTP_PORT="${HTTP_PORT:-8080}"
 # ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
 escape_for_sed() {
   # read input as $1
-  printf '%s' "$1" | sed -e 's/[\/&@]/\\&/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+  printf '%s' "$1" | sed -e 's@[\/&@]@\\&@g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+}
+
+# ---- helper: 若未提供 HY2_PORTS，则交互式询问端口数量并生成列表 ----
+maybe_init_ports_from_input() {
+  # 已提供 HY2_PORTS 时直接跳过
+  if [ -n "${HY2_PORTS:-}" ]; then
+    return 0
+  fi
+
+  local count="${HY2_PORT_COUNT:-}"
+  # 在交互式终端时询问数量
+  if [ -z "$count" ] && [ -t 0 ]; then
+    read -r -p "请输入需要的端口数量（默认 1，最大 30）：" count || true
+  fi
+
+  case "${count:-}" in
+    "" ) count=1 ;;
+    *[!0-9]* ) count=1 ;;
+  esac
+
+  if [ "$count" -lt 1 ]; then count=1; fi
+  if [ "$count" -gt 30 ]; then count=30; fi
+
+  # 按数量从主端口递增生成列表（包含主端口本身）
+  local base="$HY2_PORT"
+  local out="$base"
+  local i=1
+  while [ "$i" -lt "$count" ]; do
+    local next=$((base + i))
+    if [ "$next" -gt 65535 ]; then break; fi
+    out="${out},${next}"
+    i=$((i + 1))
+  done
+  HY2_PORTS="$out"
+  echo "[OK] 已选择端口列表：${HY2_PORTS}"
 }
 
 # ---- helper: 解析端口列表（HY2_PORTS 优先，其次 HY2_PORT） ----
@@ -366,6 +402,9 @@ fi
 if [ -z "${OBFS_PASS}" ]; then
   OBFS_PASS="$(openssl rand -hex 8)"
 fi
+
+# 若未提供 HY2_PORTS，则尝试交互式生成端口列表
+maybe_init_ports_from_input
 
 # 解析端口列表并生成每端口凭据
 PORT_LIST_CSV="$(parse_port_list)"
