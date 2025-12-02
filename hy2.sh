@@ -227,6 +227,10 @@ SVC
 start_hysteria_instance() {
   local port="$1"
   systemctl enable --now "hysteria-server@${port}" || true
+  if ! systemctl is-active --quiet "hysteria-server@${port}"; then
+    echo "[WARN] hysteria-server@${port} 未处于 active 状态，输出最近日志以诊断："
+    journalctl -u "hysteria-server@${port}" -n 50 --no-pager 2>/dev/null || true
+  fi
 }
 
 # ---- helper: 开放 UDP 端口（firewalld 或 ufw 若存在） ----
@@ -252,6 +256,20 @@ ensure_udp_ports_open() {
   fi
   if [ "$opened" -eq 0 ]; then
     echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 UDP 端口。"
+  fi
+}
+
+# ---- helper: 检查 UDP 端口监听（兼容 ss/netstat/lsof） ----
+check_udp_listening() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lunp | grep -E ":${port}\b" || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -anu | grep -E "[\.:]${port}\b" || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iUDP:${port} || true
+  else
+    echo "[WARN] 缺少 ss/netstat/lsof，无法检查端口 ${port} 的监听状态"
   fi
 }
 
@@ -668,9 +686,30 @@ if ! command -v hysteria >/dev/null 2>&1; then
     aarch64|arm64) asset="hysteria-linux-arm64" ;;
     *) asset="hysteria-linux-amd64" ;;
   esac
-  ver="$(curl -fsSL https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r '.tag_name')"
-  curl -fL "https://github.com/apernet/hysteria/releases/download/${ver}/${asset}" -o /usr/local/bin/hysteria
+  url_latest="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O /usr/local/bin/hysteria "$url_latest" || true
+  else
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y curl >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y curl >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y curl >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache curl >/dev/null 2>&1 || true
+    fi
+    command -v curl >/dev/null 2>&1 && curl -fL "$url_latest" -o /usr/local/bin/hysteria || true
+  fi
   chmod +x /usr/local/bin/hysteria
+  if ! /usr/local/bin/hysteria -v >/dev/null 2>&1; then
+    echo "[ERROR] hysteria 二进制安装失败，请检查网络或手动安装 /usr/local/bin/hysteria"
+  else
+    echo "[OK] hysteria 安装完成"
+  fi
 fi
 
 # ===========================
@@ -762,6 +801,10 @@ fi
 systemctl enable --now hysteria-server
 sleep 3
 systemctl restart hysteria-server || true
+if ! systemctl is-active --quiet hysteria-server; then
+  echo "[WARN] hysteria-server 未处于 active 状态，输出最近日志以诊断："
+  journalctl -u hysteria-server -n 80 --no-pager 2>/dev/null || true
+fi
 
 # 启动额外端口实例（需要 /acme 证书）
 if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
@@ -1002,13 +1045,13 @@ fi
 setup_auto_reboot_cron
 
 echo "=== 监听检查（UDP/${HY2_PORT}) ==="
-ss -lunp | grep -E ":${HY2_PORT}\b" || true
+check_udp_listening "$HY2_PORT"
 if [ -n "${HY2_PORTS:-}" ]; then
   echo "=== 监听检查（其他端口） ==="
   IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
   for pt in "${ports_all[@]}"; do
     if [ "$pt" != "$HY2_PORT" ]; then
-      ss -lunp | grep -E ":${pt}\b" || true
+      check_udp_listening "$pt"
     fi
   done
 fi
