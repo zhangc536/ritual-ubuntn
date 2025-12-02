@@ -170,6 +170,46 @@ start_hysteria_instance() {
   systemctl enable --now "hysteria-server@${port}" || true
 }
 
+# ---- helper: 在 ACME 成功后尝试从常见路径导入主服务证书 ----
+try_import_main_cert_shared() {
+  # 仅在当前未检测到 /acme 证书时尝试导入
+  if [ "$USE_EXISTING_CERT" -eq 1 ]; then
+    return 0
+  fi
+
+  local domain="$HY2_DOMAIN"
+  # 常见缓存目录（autocert/hysteria 可能使用）
+  local candidates=(
+    "/root/.cache/autocert"
+    "/var/lib/hysteria"
+    "/etc/hysteria"
+    "/var/cache/hysteria"
+  )
+
+  local found_cert="" found_key=""
+  for d in "${candidates[@]}"; do
+    [ -d "$d" ] || continue
+    # 先找证书
+    found_cert="$(find "$d" -maxdepth 2 -type f \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" \) 2>/dev/null | head -n1)"
+    # 再找私钥
+    found_key="$(find "$d" -maxdepth 2 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" \) 2>/dev/null | head -n1)"
+    if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
+      mkdir -p /acme/shared
+      # 尝试复制到统一共享路径
+      cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
+      cp -f "$found_key" /acme/shared/privkey.pem 2>/dev/null || cat "$found_key" > /acme/shared/privkey.pem
+      USE_EXISTING_CERT=1
+      USE_CERT_PATH="/acme/shared/fullchain.pem"
+      USE_KEY_PATH="/acme/shared/privkey.pem"
+      echo "[OK] 已从主服务导入证书到 /acme/shared，并将用于多端口实例"
+      return 0
+    fi
+  done
+
+  echo "[WARN] 未能定位主服务证书缓存文件，仍将仅运行主端口。若需多端口，请将证书放入 /acme/<dir>/fullchain.pem 与 privkey.pem。"
+  return 1
+}
+
 # ===========================
 # helper: 定义定时维护任务（每天清缓存+硬重启）
 # ===========================
@@ -736,6 +776,18 @@ EOF
     echo "[INFO] 继续执行，证书可能已成功获取"
   elif [ "$ACME_OK" -eq 1 ]; then
     echo "[OK] ACME 证书申请成功检测到"
+    # 若启用多端口，尝试从主服务导入证书并启动多实例
+    if [ -n "${HY2_PORTS:-}" ]; then
+      if try_import_main_cert_shared; then
+        ensure_systemd_template
+        IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+        for pt in "${ports_all[@]}"; do
+          [ "$pt" = "$HY2_PORT" ] && continue
+          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
+          start_hysteria_instance "$pt"
+        done
+      fi
+    fi
   fi
 else
   echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
