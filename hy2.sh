@@ -865,8 +865,8 @@ rm -f "${TMPF}"
 
 echo "[OK] Clash 订阅已写入：${TARGET}"
 
-# 若启用多端口并且存在 /acme 证书，为每端口生成独立订阅文件
-if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
+# 若启用多端口，为每端口生成独立订阅文件（与证书无关，仅生成文件）
+if [ -n "${HY2_PORTS:-}" ]; then
   IFS=',' read -r -a clash_ports <<<"$PORT_LIST_CSV"
   for pt in "${clash_ports[@]}"; do
     [ "$pt" = "$HY2_PORT" ] && continue
@@ -968,5 +968,15 @@ systemctl restart nginx
 
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
+if [ -n "${HY2_PORTS:-}" ]; then
+  IFS=',' read -r -a print_ports <<<"$PORT_LIST_CSV"
+  echo "    其他端口订阅："
+  for pt in "${print_ports[@]}"; do
+    [ "$pt" = "$HY2_PORT" ] && continue
+    if [ -f "${CLASH_WEB_DIR}/clash_${pt}.yaml" ]; then
+      echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_${pt}.yaml"
+    fi
+  done
+fi
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
