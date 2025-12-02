@@ -428,6 +428,85 @@ restore_port_80_services_if_stopped() {
   fi
 }
 
+# 预申请证书：优先使用 acme.sh 的 standalone 模式在 80/tcp 上申请证书
+# 成功后将证书链接/复制到 /acme/shared 并设置 USE_EXISTING_CERT=1
+try_issue_cert_preflight() {
+  # 允许通过环境变量禁用预申请
+  if [ "${DISABLE_PREFLIGHT_ACME:-0}" -eq 1 ]; then
+    echo "[INFO] 已禁用预申请证书逻辑（DISABLE_PREFLIGHT_ACME=1）"
+    return 1
+  fi
+
+  local domain="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
+  local acme_bin=""
+
+  # 查找 acme.sh
+  if command -v acme.sh >/dev/null 2>&1; then
+    acme_bin="$(command -v acme.sh)"
+  elif [ -x "/root/.acme.sh/acme.sh" ]; then
+    acme_bin="/root/.acme.sh/acme.sh"
+  else
+    echo "[INFO] 未发现 acme.sh，尝试安装（仅本机，可能耗时 5-15s）"
+    # 官方安装脚本（如设置 ACME_EMAIL 则会注册账户）
+    if command -v curl >/dev/null 2>&1; then
+      if [ -n "${ACME_EMAIL:-}" ]; then
+        curl -fsSL https://get.acme.sh | sh -s email="${ACME_EMAIL}" >/dev/null 2>&1 || true
+      else
+        curl -fsSL https://get.acme.sh | sh >/dev/null 2>&1 || true
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if [ -n "${ACME_EMAIL:-}" ]; then
+        wget -qO- https://get.acme.sh | sh -s email="${ACME_EMAIL}" >/dev/null 2>&1 || true
+      else
+        wget -qO- https://get.acme.sh | sh >/dev/null 2>&1 || true
+      fi
+    fi
+    if [ -x "/root/.acme.sh/acme.sh" ]; then
+      acme_bin="/root/.acme.sh/acme.sh"
+    fi
+  fi
+
+  if [ -z "$acme_bin" ]; then
+    echo "[WARN] 未能准备 acme.sh，跳过预申请"
+    return 1
+  fi
+
+  # 设置默认 CA（支持 ACME_SERVER=letsencrypt|zerossl|buypass 等）
+  "$acme_bin" --set-default-ca --server "${ACME_SERVER:-letsencrypt}" >/dev/null 2>&1 || true
+  # 可选注册账户（letsencrypt 不强制 email，zerossl 需要）
+  if [ -n "${ACME_EMAIL:-}" ]; then
+    "$acme_bin" --register-account -m "${ACME_EMAIL}" --server "${ACME_SERVER:-letsencrypt}" >/dev/null 2>&1 || true
+  fi
+
+  echo "[INFO] 预申请证书（standalone/http-01）：$domain"
+  # acme.sh 会自行占用 80/tcp；确保前面已释放 80
+  if ! "$acme_bin" --issue --standalone -d "$domain" --force; then
+    echo "[WARN] acme.sh 预申请失败"
+    return 1
+  fi
+
+  # 安装/链接证书到共享目录
+  local base="$HOME/.acme.sh/$domain"
+  local full="$base/fullchain.cer"
+  local key="$base/$domain.key"
+  if [ ! -f "$full" ] || [ ! -f "$key" ]; then
+    echo "[WARN] 未找到预申请产出的证书文件"
+    return 1
+  fi
+
+  mkdir -p /acme/shared
+  ln -sf "$full" /acme/shared/fullchain.pem 2>/dev/null || cp -f "$full" /acme/shared/fullchain.pem
+  ln -sf "$key" /acme/shared/privkey.pem 2>/dev/null || cp -f "$key" /acme/shared/privkey.pem
+  USE_EXISTING_CERT=1
+  USE_CERT_PATH="/acme/shared/fullchain.pem"
+  USE_KEY_PATH="/acme/shared/privkey.pem"
+  CERT_ORIG_PATH="$full"
+  KEY_ORIG_PATH="$key"
+  echo "[OK] 预申请成功，证书已链接到 /acme/shared，将使用 TLS 配置"
+  echo "[OK] 抓取证书源路径：cert=$CERT_ORIG_PATH key=$KEY_ORIG_PATH"
+  return 0
+}
+
 # ---- helper: 在 ACME 成功后尝试从常见路径导入主服务证书 ----
 try_import_main_cert_shared() {
   # 仅在当前未检测到 /acme 证书时尝试导入
@@ -519,24 +598,31 @@ try_import_main_cert_shared() {
     if [ -f "$cert_dir/fullchain.pem" ]; then
       link_or_copy "$cert_dir/fullchain.pem" /acme/shared/fullchain.pem
       echo "[INFO] 使用符号链接/复制指向源 fullchain.pem，以跟随上游轮转"
+      CERT_ORIG_PATH="$cert_dir/fullchain.pem"
     else
       # 若发现 chain.pem，但无 fullchain，尝试合并；否则直接链接/复制源证书
       if [ -f "$cert_dir/chain.pem" ]; then
         if cat "$cert_src" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem 2>/dev/null; then
           echo "[INFO] 源路径无 fullchain.pem，已合并 cert+chain 到 /acme/shared/fullchain.pem（轮转后需重跑脚本以更新）"
+          CERT_ORIG_PATH="$cert_src"
+          CERT_CHAIN_ORIG_PATH="$cert_dir/chain.pem"
         else
           link_or_copy "$cert_src" /acme/shared/fullchain.pem
           echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
+          CERT_ORIG_PATH="$cert_src"
         fi
       else
         link_or_copy "$cert_src" /acme/shared/fullchain.pem
         echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
+        CERT_ORIG_PATH="$cert_src"
       fi
     fi
     link_or_copy "$key_src" /acme/shared/privkey.pem
+    KEY_ORIG_PATH="$key_src"
     USE_EXISTING_CERT=1
     USE_CERT_PATH="/acme/shared/fullchain.pem"
     USE_KEY_PATH="/acme/shared/privkey.pem"
+    echo "[OK] 抓取证书源路径：cert=${CERT_ORIG_PATH:-unknown} key=${KEY_ORIG_PATH:-unknown}"
   }
 
   local found_cert="" found_key=""
@@ -980,8 +1066,17 @@ if ! command -v hysteria >/dev/null 2>&1; then
   case "$arch" in
     x86_64|amd64) asset="hysteria-linux-amd64" ;;
     aarch64|arm64) asset="hysteria-linux-arm64" ;;
+    armv7l|armv7|armhf) asset="hysteria-linux-armv7" ;;
+    i386|i486|i586|i686) asset="hysteria-linux-386" ;;
+    ppc64le) asset="hysteria-linux-ppc64le" ;;
+    riscv64) asset="hysteria-linux-riscv64" ;;
+    s390x) asset="hysteria-linux-s390x" ;;
     *) asset="hysteria-linux-amd64" ;;
   esac
+  # 允许手动覆盖下载资产名（例如 HYST_ASSET_OVERRIDE=hysteria-linux-armv7）
+  if [ -n "${HYST_ASSET_OVERRIDE:-}" ]; then
+    asset="${HYST_ASSET_OVERRIDE}"
+  fi
   mkdir -p /usr/local/bin
   url_default="https://github.com/apernet/hysteria/releases/latest/download/${asset}"
   # 可通过环境变量指定镜像基地址（例如 ghproxy）：HYST_DOWNLOAD_BASE=https://ghproxy.com/https://github.com/apernet/hysteria/releases/latest/download
@@ -1025,10 +1120,25 @@ if ! command -v hysteria >/dev/null 2>&1; then
     echo "[ERROR] 无法下载 hysteria 二进制。请检查网络，或设置 HYST_DOWNLOAD_BASE 为镜像地址。"
   fi
   chmod +x /usr/local/bin/hysteria
-  if ! /usr/local/bin/hysteria -v >/dev/null 2>&1; then
-    echo "[ERROR] hysteria 二进制安装失败，请检查网络或手动安装 /usr/local/bin/hysteria"
-  else
+  verify_ok=0
+  # 兼容不同版本的版本打印命令
+  if /usr/local/bin/hysteria -v >/dev/null 2>&1; then verify_ok=1; fi
+  if [ "$verify_ok" -ne 1 ] && /usr/local/bin/hysteria --version >/dev/null 2>&1; then verify_ok=1; fi
+  if [ "$verify_ok" -ne 1 ] && /usr/local/bin/hysteria version >/dev/null 2>&1; then verify_ok=1; fi
+  if [ "$verify_ok" -eq 1 ]; then
     echo "[OK] hysteria 安装完成"
+  else
+    # 输出诊断信息帮助定位问题（架构/文件类型/可执行权限）
+    echo "[ERROR] hysteria 二进制安装失败：无法正常执行版本命令"
+    echo "       uname -m: $arch"
+    if command -v file >/dev/null 2>&1; then
+      echo "       file /usr/local/bin/hysteria: $(file /usr/local/bin/hysteria 2>/dev/null)"
+    fi
+    if [ ! -x /usr/local/bin/hysteria ]; then
+      echo "       提示：文件不可执行（-x 缺失），尝试 chmod +x /usr/local/bin/hysteria"
+    fi
+    echo "       若为架构不匹配，请设置 HYST_ASSET_OVERRIDE 为合适的资产名后重试。"
+    echo "       示例：HYST_ASSET_OVERRIDE=hysteria-linux-armv7 或 hysteria-linux-386"
   fi
 fi
 
@@ -1072,14 +1182,19 @@ if [ -d "$ACME_BASE" ]; then
 fi
 
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[INFO] /acme 下未找到证书，尝试从主服务缓存自动导入..."
-  if try_import_main_cert_shared; then
-    echo "[OK] 已自动导入主证书到 /acme/shared，将用于多端口实例"
-  else
-    echo "[INFO] 脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
-  fi
-  # 提前检查 80/tcp 是否可用，若不可用将考虑自签证书回退
+  echo "[INFO] /acme 下未找到证书，先尝试预申请（standalone/http-01）..."
+  # 提前检查/释放 80/tcp，预申请将占用该端口
   ensure_port_80_available
+  if try_issue_cert_preflight; then
+    echo "[OK] 预申请完成，已将证书放置到 /acme/shared"
+  else
+    echo "[INFO] 预申请失败，尝试从主服务缓存自动导入证书..."
+    if try_import_main_cert_shared; then
+      echo "[OK] 已自动导入主证书到 /acme/shared，将用于多端口实例"
+    else
+      echo "[INFO] 未能导入缓存，后续将使用内置 ACME（需 80/tcp 可达）"
+    fi
+  fi
 fi
 
 # ===========================
