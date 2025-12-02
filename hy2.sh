@@ -145,6 +145,63 @@ EOF
   fi
 }
 
+# ---- helper: 写主端口 /etc/hysteria/config.yaml（TLS 或 ACME） ----
+write_hysteria_main_config() {
+  local use_tls="$1"
+  mkdir -p /etc/hysteria /acme/autocert
+  if [ "$use_tls" = "1" ]; then
+    cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+  else
+    cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+
+acme:
+  domains:
+    - ${HY2_DOMAIN}
+  dir: /acme/autocert
+  type: http
+  listenHost: 0.0.0.0
+EOF
+  fi
+}
+
+# ---- helper: 使用 TLS 启动额外端口实例（基于 PORT_LIST_CSV） ----
+start_additional_instances_with_tls() {
+  [ -n "${HY2_PORTS:-}" ] || return 0
+  ensure_systemd_template
+  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+  for pt in "${ports_all[@]}"; do
+    [ "$pt" = "$HY2_PORT" ] && continue
+    write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
+    start_hysteria_instance "$pt"
+  done
+  ensure_udp_ports_open "$PORT_LIST_CSV"
+}
+
 # ---- helper: systemd 模板服务（@）确保存在 ----
 ensure_systemd_template() {
   cat >/etc/systemd/system/hysteria-server@.service <<'SVC'
@@ -265,8 +322,9 @@ try_import_main_cert_shared() {
   fi
 
   local domain="$HY2_DOMAIN"
-  # 常见缓存目录（autocert/hysteria 可能使用）
+  # 常见缓存目录（包括脚本配置的 /acme/autocert）
   local candidates=(
+    "/acme/autocert"
     "/root/.cache/autocert"
     "/root/.acme.sh"
     "/var/lib/hysteria"
@@ -278,9 +336,9 @@ try_import_main_cert_shared() {
   for d in "${candidates[@]}"; do
     [ -d "$d" ] || continue
     # 先找证书
-    found_cert="$(find "$d" -maxdepth 2 -type f \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" \) 2>/dev/null | head -n1)"
+    found_cert="$(find "$d" -maxdepth 5 -type f \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" \) 2>/dev/null | head -n1)"
     # 再找私钥
-    found_key="$(find "$d" -maxdepth 2 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" \) 2>/dev/null | head -n1)"
+    found_key="$(find "$d" -maxdepth 5 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" \) 2>/dev/null | head -n1)"
     if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
       mkdir -p /acme/shared
       # 尝试复制到统一共享路径
@@ -574,53 +632,11 @@ fi
 # ===========================
 mkdir -p /etc/hysteria
 if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-  cat >/etc/hysteria/config.yaml <<EOF
-listen: :${HY2_PORT}
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-
-tls:
-  cert: ${USE_CERT_PATH}
-  key: ${USE_KEY_PATH}
-EOF
+  write_hysteria_main_config 1
   echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
-  # 多端口：为额外端口写 TLS 配置文件
-  if [ -n "${HY2_PORTS:-}" ]; then
-    IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-    for pt in "${ports_all[@]}"; do
-      if [ "$pt" != "$HY2_PORT" ]; then
-        write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
-      fi
-    done
-  fi
+  start_additional_instances_with_tls
 else
-  mkdir -p /acme/autocert
-  cat >/etc/hysteria/config.yaml <<EOF
-listen: :${HY2_PORT}
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-
-acme:
-  domains:
-    - ${HY2_DOMAIN}
-  dir: /acme/autocert
-  type: http
-  listenHost: 0.0.0.0
-EOF
+  write_hysteria_main_config 0
   echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
 fi
 
@@ -734,38 +750,12 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
         # 停止当前服务
         systemctl stop hysteria-server 2>/dev/null || true
         
-        # 重新生成配置文件（保持与初始逻辑一致）
-        # 根据是否存在现有证书选择 tls 或 acme 写法
-        cat >/etc/hysteria/config.yaml <<EOF
-listen: :${HY2_PORT}
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-EOF
+        # 重新生成配置文件（根据是否存在现有证书写 TLS/ACME）
         if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-          cat >>/etc/hysteria/config.yaml <<EOF
-
-tls:
-  cert: ${USE_CERT_PATH}
-  key: ${USE_KEY_PATH}
-EOF
+          write_hysteria_main_config 1
           SWITCH_USED_ACME=0
         else
-          cat >>/etc/hysteria/config.yaml <<EOF
-
-acme:
-  domains:
-    - ${HY2_DOMAIN}
-  dir: /acme/autocert
-  type: http
-  listenHost: 0.0.0.0
-EOF
+          write_hysteria_main_config 0
           SWITCH_USED_ACME=1
         fi
         
@@ -885,22 +875,7 @@ EOF
     echo "[OK] ACME 证书申请成功检测到"
     # 证书申请成功后，优先导入主证书并将主端口切换为 TLS
     if try_import_main_cert_shared; then
-      cat >/etc/hysteria/config.yaml <<EOF
-listen: :${HY2_PORT}
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-
-tls:
-  cert: ${USE_CERT_PATH}
-  key: ${USE_KEY_PATH}
-EOF
+      write_hysteria_main_config 1
       systemctl restart hysteria-server || true
       echo "[OK] 主端口已切换为 TLS 证书运行"
     else
@@ -910,14 +885,7 @@ EOF
     # 若启用多端口，仅在导入主证书成功后启动多实例（避免 ACME 并发占用 80/tcp）
     if [ -n "${HY2_PORTS:-}" ]; then
       if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-        ensure_systemd_template
-        IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-        for pt in "${ports_all[@]}"; do
-          [ "$pt" = "$HY2_PORT" ] && continue
-          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
-          start_hysteria_instance "$pt"
-        done
-        ensure_udp_ports_open "$PORT_LIST_CSV"
+        start_additional_instances_with_tls
       else
         echo "[WARN] ACME 成功但未找到可导入证书，额外端口暂不启动（避免端口80冲突）"
       fi
