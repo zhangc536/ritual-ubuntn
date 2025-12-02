@@ -302,6 +302,9 @@ ensure_tcp_port_open() {
 # ---- helper: 申请 ACME 前确保 80 可用（自动停止 nginx/apache 并开放 80/tcp） ----
 STOPPED_NGINX=0
 STOPPED_APACHE=0
+STOPPED_CADDY=0
+STOPPED_TRAEFIK=0
+PORT80_FREE=1
 ensure_port_80_available() {
   # 开放 80/tcp
   ensure_tcp_port_open "80"
@@ -317,6 +320,32 @@ ensure_port_80_available() {
     systemctl stop apache2 2>/dev/null || true
     STOPPED_APACHE=1
   fi
+  if systemctl is-active --quiet caddy 2>/dev/null; then
+    echo "[INFO] 检测到 caddy 正在运行，申请证书将占用 80/tcp，暂时停止 caddy..."
+    systemctl stop caddy 2>/dev/null || true
+    STOPPED_CADDY=1
+  fi
+  if systemctl is-active --quiet traefik 2>/dev/null; then
+    echo "[INFO] 检测到 traefik 正在运行，申请证书将占用 80/tcp，暂时停止 traefik..."
+    systemctl stop traefik 2>/dev/null || true
+    STOPPED_TRAEFIK=1
+  fi
+
+  # 二次检测占用情况
+  PORT80_FREE=1
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltnp | grep -E "\b:80\b" >/dev/null 2>&1; then PORT80_FREE=0; fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -lntp 2>/dev/null | grep -E "\b:80\b" >/dev/null; then PORT80_FREE=0; fi
+  elif command -v lsof >/dev/null 2>&1; then
+    if lsof -nP -iTCP:80 -sTCP:LISTEN >/dev/null 2>&1; then PORT80_FREE=0; fi
+  fi
+  if [ "$PORT80_FREE" -eq 0 ]; then
+    echo "[WARN] 80/tcp 仍被占用，ACME HTTP-01 可能无法启动。"
+    echo "      请确认没有其他进程占用 80 端口（如反向代理或容器），或手动释放后重试。"
+  else
+    echo "[OK] 80/tcp 可用，ACME 可正常运行"
+  fi
 }
 
 restore_port_80_services_if_stopped() {
@@ -329,6 +358,16 @@ restore_port_80_services_if_stopped() {
     echo "[INFO] 恢复 apache2 服务..."
     systemctl start apache2 2>/dev/null || true
     STOPPED_APACHE=0
+  fi
+  if [ "$STOPPED_CADDY" -eq 1 ]; then
+    echo "[INFO] 恢复 caddy 服务..."
+    systemctl start caddy 2>/dev/null || true
+    STOPPED_CADDY=0
+  fi
+  if [ "$STOPPED_TRAEFIK" -eq 1 ]; then
+    echo "[INFO] 恢复 traefik 服务..."
+    systemctl start traefik 2>/dev/null || true
+    STOPPED_TRAEFIK=0
   fi
 }
 
@@ -984,6 +1023,8 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   else
     echo "[INFO] 脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
   fi
+  # 提前检查 80/tcp 是否可用，若不可用将考虑自签证书回退
+  ensure_port_80_available
 fi
 
 # ===========================
@@ -995,8 +1036,16 @@ if [ "$USE_EXISTING_CERT" -eq 1 ]; then
   echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
   start_additional_instances_with_tls
 else
-  write_hysteria_main_config 0
-  echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
+  if [ "$PORT80_FREE" -eq 1 ]; then
+    write_hysteria_main_config 0
+    echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
+  else
+    echo "[WARN] 80/tcp 不可用且无现有证书，回退生成自签证书以启动主服务"
+    generate_self_signed_cert
+    write_hysteria_main_config 1
+    SELF_SIGNED_USED=1
+    echo "[OK] 已写入 hysteria 配置（使用自签证书）"
+  fi
 fi
 
 # ===========================
@@ -1295,7 +1344,11 @@ OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1],
 NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$NAME_TAG")"
 PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$PIN_SHA256")"
 
-URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+INSECURE_VAL=0
+if [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
+  INSECURE_VAL=1
+fi
+URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
 echo
 echo "=========== HY2 节点（URI） ==========="
@@ -1507,3 +1560,34 @@ if [ -n "${HY2_PORTS:-}" ]; then
 fi
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
+# ---- helper: 生成自签证书并导入到 /acme/shared ----
+generate_self_signed_cert() {
+  local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
+  local ip="$SELECTED_IP"
+  mkdir -p /acme/shared
+  if command -v openssl >/dev/null 2>&1; then
+    echo "[*] 生成自签证书用于临时启动..."
+    # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
+    if openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
+      -days 365 -subj "/CN=${dom}" -addext "subjectAltName=DNS:${dom},IP:${ip}" >/dev/null 2>&1; then
+      :
+    else
+      openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
+        -days 365 -subj "/CN=${dom}" >/dev/null 2>&1 || true
+    fi
+    # 计算 SPKI pin（供客户端使用 pinSHA256，避免 insecure）
+    if command -v sha256sum >/dev/null 2>&1; then
+      PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
+        openssl pkey -pubin -outform DER 2>/dev/null | \
+        openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
+    fi
+    USE_EXISTING_CERT=1
+    USE_CERT_PATH="/acme/shared/fullchain.pem"
+    USE_KEY_PATH="/acme/shared/privkey.pem"
+    echo "[OK] 自签证书已生成并导入 /acme/shared"
+  else
+    echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 或释放 80 端口以使用 ACME。"
+  fi
+}
