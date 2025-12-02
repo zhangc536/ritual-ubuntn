@@ -320,7 +320,8 @@ try_import_main_cert_shared() {
 # ===========================
 install_hysteria_binary() {
   echo "[*] 安装 hysteria ..."
-  local arch asset bin url_main url_mirror url_version override
+  local arch asset bin url_main url_mirror override
+  local url_version=""
   arch="$(uname -m)"; bin="/usr/local/bin/hysteria"
   case "$arch" in
     x86_64|amd64) asset="hysteria-linux-amd64" ;;
@@ -350,7 +351,7 @@ install_hysteria_binary() {
     "$out" -v >/dev/null 2>&1
   }
   if [ -n "$override" ] && fetch "$override" "$bin"; then echo "[OK] 覆盖 URL 安装 hysteria"; return 0; fi
-  if [ -n "$url_version" ] && fetch "$url_version" "$bin"; then echo "[OK] 指定版本安装 hysteria"; return 0; fi
+  if [ -n "${url_version:-}" ] && fetch "$url_version" "$bin"; then echo "[OK] 指定版本安装 hysteria"; return 0; fi
   if fetch "$url_main" "$bin"; then echo "[OK] GitHub latest 安装 hysteria"; return 0; fi
   if fetch "$url_mirror" "$bin"; then echo "[OK] ghproxy 镜像安装 hysteria"; return 0; fi
   if command -v go >/dev/null 2>&1; then
