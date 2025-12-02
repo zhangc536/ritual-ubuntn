@@ -479,6 +479,29 @@ try_issue_cert_preflight() {
   fi
 
   echo "[INFO] 预申请证书（standalone/http-01）：$domain"
+  # acme.sh standalone 需要 socat；自动安装以避免 "Please install socat tools first"
+  if ! command -v socat >/dev/null 2>&1; then
+    echo "[INFO] 检测到缺少 socat，开始安装..."
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y socat >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y socat >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y socat >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache socat >/dev/null 2>&1 || true
+    elif command -v zypper >/dev/null 2>&1; then
+      zypper install -y socat >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -Sy --noconfirm socat >/dev/null 2>&1 || true
+    fi
+    if command -v socat >/dev/null 2>&1; then
+      echo "[OK] socat 安装成功"
+    else
+      echo "[WARN] 无法安装 socat，预申请可能失败"
+    fi
+  fi
   # acme.sh 会自行占用 80/tcp；确保前面已释放 80
   if ! "$acme_bin" --issue --standalone -d "$domain" --force; then
     echo "[WARN] acme.sh 预申请失败"
