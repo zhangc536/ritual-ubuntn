@@ -181,6 +181,7 @@ try_import_main_cert_shared() {
   # 常见缓存目录（autocert/hysteria 可能使用）
   local candidates=(
     "/root/.cache/autocert"
+    "/root/.acme.sh"
     "/var/lib/hysteria"
     "/etc/hysteria"
     "/var/cache/hysteria"
@@ -473,7 +474,12 @@ if [ -d "$ACME_BASE" ]; then
 fi
 
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[INFO] /acme 下未找到证书，脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
+  echo "[INFO] /acme 下未找到证书，尝试从主服务缓存自动导入..."
+  if try_import_main_cert_shared; then
+    echo "[OK] 已自动导入主证书到 /acme/shared，将用于多端口实例"
+  else
+    echo "[INFO] 脚本将尝试 ACME HTTP-01（需 80/tcp 可达）"
+  fi
 fi
 
 # ===========================
