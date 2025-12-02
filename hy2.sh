@@ -321,7 +321,8 @@ try_import_main_cert_shared() {
     return 0
   fi
 
-  local domain="$HY2_DOMAIN"
+  # 支持域名切换后的匹配
+  local domain="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
   # 常见缓存目录（包括脚本配置的 /acme/autocert）
   local candidates=(
     "/acme/autocert"
@@ -330,30 +331,123 @@ try_import_main_cert_shared() {
     "/var/lib/hysteria"
     "/etc/hysteria"
     "/var/cache/hysteria"
+    "/etc/letsencrypt/live"
+    "/etc/ssl"
+    "/etc/nginx"
   )
+
+  # 证书域名/SAN 校验 + 私钥匹配校验
+  verify_cert_key_pair() {
+    local cert="$1" key="$2" dom="$3"
+    if ! command -v openssl >/dev/null 2>&1; then
+      # 无 openssl 时不做严格校验，直接接受
+      return 0
+    fi
+
+    # 证书未来 24h 不过期
+    if ! openssl x509 -checkend 86400 -noout -in "$cert" >/dev/null 2>&1; then
+      return 1
+    fi
+
+    # 域名匹配（SubjectAltName 或 CN）
+    cert_domain_matches() {
+      local c="$1" d="$2"
+      local san_entries=()
+      mapfile -t san_entries < <(openssl x509 -noout -ext subjectAltName -in "$c" 2>/dev/null | grep -o -E 'DNS:[^,]+' | sed 's/^DNS://')
+      # 直接匹配
+      for e in "${san_entries[@]}"; do
+        [ "$e" = "$d" ] && return 0
+      done
+      # 通配符匹配（*.example.com 匹配 foo.example.com）
+      for e in "${san_entries[@]}"; do
+        case "$e" in
+          \*.*)
+            local suffix="${e#*.}"
+            case "$d" in
+              *."$suffix") return 0;;
+            esac
+            ;;
+        esac
+      done
+      # 退化为 CN 匹配
+      local cn
+      cn="$(openssl x509 -noout -subject -in "$c" 2>/dev/null | grep -o -E 'CN=[^/,]+' | head -n1 | sed 's/^CN=//')"
+      [ -n "$cn" ] && [ "$cn" = "$d" ]
+    }
+    cert_domain_matches "$cert" "$dom" || return 1
+
+    # 证书与私钥是否匹配：比较公钥哈希（兼容 RSA/ECDSA）
+    local cert_pub_hash key_pub_hash
+    cert_pub_hash="$(openssl x509 -noout -pubkey -in "$cert" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}')"
+    key_pub_hash="$(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}')"
+    [ -n "$cert_pub_hash" ] && [ -n "$key_pub_hash" ] && [ "$cert_pub_hash" = "$key_pub_hash" ]
+  }
 
   local found_cert="" found_key=""
   for d in "${candidates[@]}"; do
     [ -d "$d" ] || continue
-    # 先找证书
-    found_cert="$(find "$d" -maxdepth 5 -type f \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" \) 2>/dev/null | head -n1)"
-    # 再找私钥
-    found_key="$(find "$d" -maxdepth 5 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" \) 2>/dev/null | head -n1)"
+    # 在候选目录下尽可能多地找出证书/私钥候选
+    mapfile -t certs < <(find "$d" -maxdepth 6 -type f \( \
+      -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" -o -name "*.crt" -o -name "*.cer" \
+    \) 2>/dev/null)
+    mapfile -t keys < <(find "$d" -maxdepth 6 -type f \( \
+      -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \
+    \) 2>/dev/null)
+
+    # 优先同目录匹配；否则尝试跨目录匹配
+    for c in "${certs[@]}"; do
+      # 优先找同目录下的密钥
+      local base_dir
+      base_dir="$(dirname "$c")"
+      local k_same
+      k_same="$(find "$base_dir" -maxdepth 1 -type f \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
+      if [ -n "$k_same" ] && verify_cert_key_pair "$c" "$k_same" "$domain"; then
+        found_cert="$c"; found_key="$k_same"; break
+      fi
+      # 退化为跨目录匹配
+      for k in "${keys[@]}"; do
+        if verify_cert_key_pair "$c" "$k" "$domain"; then
+          found_cert="$c"; found_key="$k"; break
+        fi
+      done
+      [ -n "$found_cert" ] && break
+    done
+
     if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
       mkdir -p /acme/shared
-      # 尝试复制到统一共享路径
-      cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
+      # 若存在 chain.pem，优先构造 fullchain
+      local cert_dir
+      cert_dir="$(dirname "$found_cert")"
+      if [ -f "$cert_dir/chain.pem" ]; then
+        cat "$found_cert" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem
+      else
+        cp -f "$found_cert" /acme/shared/fullchain.pem 2>/dev/null || cat "$found_cert" > /acme/shared/fullchain.pem
+      fi
       cp -f "$found_key" /acme/shared/privkey.pem 2>/dev/null || cat "$found_key" > /acme/shared/privkey.pem
       USE_EXISTING_CERT=1
       USE_CERT_PATH="/acme/shared/fullchain.pem"
       USE_KEY_PATH="/acme/shared/privkey.pem"
-      echo "[OK] 已从主服务导入证书到 /acme/shared，并将用于多端口实例"
+      echo "[OK] 已从主服务导入证书到 /acme/shared（校验通过），用于多端口实例"
       return 0
     fi
   done
 
   echo "[WARN] 未能定位主服务证书缓存文件，仍将仅运行主端口。若需多端口，请将证书放入 /acme/<dir>/fullchain.pem 与 privkey.pem。"
   return 1
+}
+
+# ---- helper: 使用 ACME 缓存目录启动额外端口（导入失败的回退方案） ----
+start_additional_instances_with_acme_cache() {
+  [ -n "${HY2_PORTS:-}" ] || return 0
+  ensure_systemd_template
+  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+  for pt in "${ports_all[@]}"; do
+    [ "$pt" = "$HY2_PORT" ] && continue
+    # 使用 ACME dir 缓存（不会重复发起挑战，直接读取已缓存证书）
+    write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "0"
+    start_hysteria_instance "$pt"
+  done
+  ensure_udp_ports_open "$PORT_LIST_CSV"
 }
 
 # ===========================
@@ -887,7 +981,9 @@ EOF
       if [ "$USE_EXISTING_CERT" -eq 1 ]; then
         start_additional_instances_with_tls
       else
-        echo "[WARN] ACME 成功但未找到可导入证书，额外端口暂不启动（避免端口80冲突）"
+        echo "[WARN] ACME 成功但未找到可导入证书，尝试使用 ACME 缓存启动多端口"
+        start_additional_instances_with_acme_cache
+        echo "[OK] 额外端口已基于 ACME 缓存启动"
       fi
     fi
   fi
