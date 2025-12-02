@@ -139,8 +139,8 @@ acme:
   domains:
     - ${HY2_DOMAIN}
   dir: /acme/autocert
-  disable_http_challenge: false
-  disable_tlsalpn_challenge: true
+  type: http
+  listenHost: 0.0.0.0
 EOF
   fi
 }
@@ -195,6 +195,65 @@ ensure_udp_ports_open() {
   fi
   if [ "$opened" -eq 0 ]; then
     echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 UDP 端口。"
+  fi
+}
+
+# ---- helper: 开放 TCP 端口（用于 ACME 的 80/tcp） ----
+ensure_tcp_port_open() {
+  local list_csv="$1"
+  local opened=0
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    local changed=0
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      firewall-cmd --query-port="${pt}/tcp" >/dev/null 2>&1 || { firewall-cmd --add-port="${pt}/tcp" --permanent >/dev/null 2>&1 && changed=1; }
+    done
+    if [ "$changed" -eq 1 ]; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
+    echo "[OK] firewalld 已放行指定 TCP 端口"
+    opened=1
+  elif command -v ufw >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      ufw status 2>/dev/null | grep -q "${pt}/tcp" || ufw allow "${pt}/tcp" >/dev/null 2>&1 || true
+    done
+    echo "[OK] ufw 已放行指定 TCP 端口"
+    opened=1
+  fi
+  if [ "$opened" -eq 0 ]; then
+    echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 TCP 端口。"
+  fi
+}
+
+# ---- helper: 申请 ACME 前确保 80 可用（自动停止 nginx/apache 并开放 80/tcp） ----
+STOPPED_NGINX=0
+STOPPED_APACHE=0
+ensure_port_80_available() {
+  # 开放 80/tcp
+  ensure_tcp_port_open "80"
+
+  # 检查并停止常见占用者
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    echo "[INFO] 检测到 nginx 正在运行，申请证书将占用 80/tcp，暂时停止 nginx..."
+    systemctl stop nginx 2>/dev/null || true
+    STOPPED_NGINX=1
+  fi
+  if systemctl is-active --quiet apache2 2>/dev/null; then
+    echo "[INFO] 检测到 apache2 正在运行，申请证书将占用 80/tcp，暂时停止 apache2..."
+    systemctl stop apache2 2>/dev/null || true
+    STOPPED_APACHE=1
+  fi
+}
+
+restore_port_80_services_if_stopped() {
+  if [ "$STOPPED_NGINX" -eq 1 ]; then
+    echo "[INFO] 恢复 nginx 服务..."
+    systemctl start nginx 2>/dev/null || true
+    STOPPED_NGINX=0
+  fi
+  if [ "$STOPPED_APACHE" -eq 1 ]; then
+    echo "[INFO] 恢复 apache2 服务..."
+    systemctl start apache2 2>/dev/null || true
+    STOPPED_APACHE=0
   fi
 }
 
@@ -559,8 +618,8 @@ acme:
   domains:
     - ${HY2_DOMAIN}
   dir: /acme/autocert
-  disable_http_challenge: false
-  disable_tlsalpn_challenge: true
+  type: http
+  listenHost: 0.0.0.0
 EOF
   echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
 fi
@@ -586,6 +645,10 @@ WantedBy=multi-user.target
 SVC
 
 systemctl daemon-reload
+if [ "$USE_EXISTING_CERT" -eq 0 ]; then
+  # 申请 ACME 前确保 80/tcp 可用并已放行
+  ensure_port_80_available
+fi
 systemctl enable --now hysteria-server
 sleep 3
 systemctl restart hysteria-server || true
@@ -692,18 +755,24 @@ tls:
   cert: ${USE_CERT_PATH}
   key: ${USE_KEY_PATH}
 EOF
+          SWITCH_USED_ACME=0
         else
           cat >>/etc/hysteria/config.yaml <<EOF
 
 acme:
   domains:
     - ${HY2_DOMAIN}
-  disable_http_challenge: false
-  disable_tlsalpn_challenge: true
+  dir: /acme/autocert
+  type: http
+  listenHost: 0.0.0.0
 EOF
+          SWITCH_USED_ACME=1
         fi
         
         # 重启服务
+         if [ "${SWITCH_USED_ACME:-0}" -eq 1 ]; then
+           ensure_port_80_available
+         fi
          systemctl start hysteria-server
          echo "[OK] 已切换到 ${service}，重新启动证书申请..."
          
@@ -814,30 +883,56 @@ EOF
     echo "[INFO] 继续执行，证书可能已成功获取"
   elif [ "$ACME_OK" -eq 1 ]; then
     echo "[OK] ACME 证书申请成功检测到"
-    # 若启用多端口，启动多实例（优先导入主证书；否则共享 ACME 缓存目录）
+    # 证书申请成功后，优先导入主证书并将主端口切换为 TLS
+    if try_import_main_cert_shared; then
+      cat >/etc/hysteria/config.yaml <<EOF
+listen: :${HY2_PORT}
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+
+tls:
+  cert: ${USE_CERT_PATH}
+  key: ${USE_KEY_PATH}
+EOF
+      systemctl restart hysteria-server || true
+      echo "[OK] 主端口已切换为 TLS 证书运行"
+    else
+      echo "[WARN] 未能导入主证书缓存；主端口继续使用 ACME 配置运行"
+    fi
+
+    # 若启用多端口，仅在导入主证书成功后启动多实例（避免 ACME 并发占用 80/tcp）
     if [ -n "${HY2_PORTS:-}" ]; then
-      ensure_systemd_template
-      IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-      # 尝试导入主证书
-      if try_import_main_cert_shared; then
-        use_tls_for_ports=1
-      else
-        use_tls_for_ports=0
-      fi
-      for pt in "${ports_all[@]}"; do
-        [ "$pt" = "$HY2_PORT" ] && continue
-        if [ "$use_tls_for_ports" -eq 1 ]; then
+      if [ "$USE_EXISTING_CERT" -eq 1 ]; then
+        ensure_systemd_template
+        IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+        for pt in "${ports_all[@]}"; do
+          [ "$pt" = "$HY2_PORT" ] && continue
           write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
-        else
-          write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "0"
-        fi
-        start_hysteria_instance "$pt"
-      done
-      ensure_udp_ports_open "$PORT_LIST_CSV"
+          start_hysteria_instance "$pt"
+        done
+        ensure_udp_ports_open "$PORT_LIST_CSV"
+      else
+        echo "[WARN] ACME 成功但未找到可导入证书，额外端口暂不启动（避免端口80冲突）"
+      fi
     fi
   fi
 else
   echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
+fi
+
+# 如果为申请证书暂时关闭了 80/tcp 上的服务，这里恢复
+restore_port_80_services_if_stopped
+
+# 在完成证书流程后，若未启用多端口，则至少放行主端口 UDP
+if [ -z "${HY2_PORTS:-}" ]; then
+  ensure_udp_ports_open "$HY2_PORT"
 fi
 
 setup_auto_reboot_cron
