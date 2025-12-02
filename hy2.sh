@@ -503,9 +503,62 @@ try_issue_cert_preflight() {
     fi
   fi
   # acme.sh 会自行占用 80/tcp；确保前面已释放 80
-  if ! "$acme_bin" --issue --standalone -d "$domain" --force; then
-    echo "[WARN] acme.sh 预申请失败"
-    return 1
+  # 可选启用暂存环境以避开生产速率限制：ACME_STAGING=1
+  local issue_args=(--issue --standalone -d "$domain" --force)
+  if [ "${ACME_STAGING:-0}" -eq 1 ]; then
+    issue_args+=(--staging)
+    echo "[INFO] 使用 Let’s Encrypt 暂存环境进行预申请（不受生产速率限制，证书不可信）"
+  fi
+  local acme_output
+  if ! acme_output=$("$acme_bin" "${issue_args[@]}" 2>&1); then
+    # 检测速率限制并尝试切换动态域名服务（sslip.io -> nip.io -> xip.io）
+    if echo "$acme_output" | grep -E -iq "(rateLimited|too many certificates\s*\(5\)\s*already issued for this exact set of identifiers)"; then
+      echo "[WARN] 预申请命中速率限制，尝试切换动态域名服务..."
+      # 识别当前服务
+      local current_service=""
+      if echo "$domain" | grep -q "sslip.io"; then current_service="sslip.io"; fi
+      if echo "$domain" | grep -q "nip.io"; then current_service="nip.io"; fi
+      if echo "$domain" | grep -q "xip.io"; then current_service="xip.io"; fi
+
+      # 生成候选域名（跳过当前服务）
+      local ip_dash="${SELECTED_IP//./-}"; local ip_dot="$SELECTED_IP"
+      local switched=0
+      for svc in sslip.io nip.io xip.io; do
+        [ "$svc" = "$current_service" ] && continue
+        local new_domain
+        if [ "$svc" = "xip.io" ]; then
+          new_domain="${ip_dot}.${svc}"
+        else
+          new_domain="${ip_dash}.${svc}"
+        fi
+        echo "[*] 尝试使用备用域名：${new_domain}"
+        local issue_args2=(--issue --standalone -d "$new_domain" --force)
+        if [ "${ACME_STAGING:-0}" -eq 1 ]; then issue_args2+=(--staging); fi
+        local out2
+        if out2=$("$acme_bin" "${issue_args2[@]}" 2>&1); then
+          HY2_DOMAIN="$new_domain"
+          SWITCHED_DOMAIN="$new_domain"
+          echo "[OK] 备用域名预申请成功：$new_domain"
+          acme_output="$out2"
+          switched=1
+          break
+        else
+          # 如果再次命中速率限制则继续尝试下一个服务
+          if echo "$out2" | grep -E -iq "(rateLimited|too many certificates\s*\(5\)\s*already issued for this exact set of identifiers)"; then
+            echo "[WARN] 备用域名仍命中速率限制，尝试下一个服务..."
+            continue
+          fi
+          echo "[WARN] 备用域名预申请失败：$svc"
+        fi
+      done
+      if [ "$switched" -ne 1 ]; then
+        echo "[WARN] 所有备用动态域名服务预申请均失败或受限"
+        return 1
+      fi
+    else
+      echo "[WARN] acme.sh 预申请失败"
+      return 1
+    fi
   fi
 
   # 安装/链接证书到共享目录
