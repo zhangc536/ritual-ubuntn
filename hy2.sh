@@ -915,7 +915,7 @@ server {
     # 额外路由：提供每端口订阅文件 /clash_<port>.yaml
     location ~ ^/clash_[0-9]+\.yaml$ {
         default_type application/x-yaml;
-        try_files $uri =404;
+        try_files \$uri =404;
     }
 
     access_log /var/log/nginx/clash_access.log;
