@@ -802,6 +802,7 @@ proxies:
     obfs: salamander
     obfs-password: __OBFS_PASS__
     __SNI_LINE__
+    __VERIFY_LINE__
 
 proxy-groups:
   - name: "🚀 节点选择"
@@ -831,14 +832,20 @@ PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
 PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
 OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
 SNI_LINE=""
+VERIFY_LINE=""
+# 若使用自签证书，Clash 订阅默认跳过证书校验以避免握手失败
+if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
+  VERIFY_LINE="skip-cert-verify: true"
+fi
 SNI_ESC="$(escape_for_sed "${SNI_LINE}")"
-
+VERIFY_ESC="$(escape_for_sed "${VERIFY_LINE}")"
 sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
     -e "s@__SELECTED_IP__@${IP_ESC}@g" \
     -e "s@__HY2_PORT__@${PORT_ESC}@g" \
     -e "s@__HY2_PASS__@${PASS_ESC}@g" \
     -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
     -e "s@__SNI_LINE__@${SNI_ESC}@g" \
+    -e "s@__VERIFY_LINE__@${VERIFY_ESC}@g" \
     "${TMPF}" > "${TARGET}"
 rm -f "${TMPF}"
 
@@ -880,6 +887,7 @@ proxies:
     obfs: salamander
     obfs-password: __OBFS_PASS__
     __SNI_LINE__
+    __VERIFY_LINE__
 
 proxy-groups:
   - name: "🚀 节点选择"
@@ -912,13 +920,19 @@ EOF
         SNI_LINE2=""
       fi
     fi
+    VERIFY_LINE2=""
+    if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
+      VERIFY_LINE2="skip-cert-verify: true"
+    fi
     SNI_ESC2="$(escape_for_sed "${SNI_LINE2}")"
+    VERIFY_ESC2="$(escape_for_sed "${VERIFY_LINE2}")"
     sed -e "s@__NAME_TAG__@${NAME_ESC2}@g" \
         -e "s@__SELECTED_IP__@${IP_ESC2}@g" \
         -e "s@__HY2_PORT__@${PORT_ESC2}@g" \
         -e "s@__HY2_PASS__@${PASS_ESC2}@g" \
         -e "s@__OBFS_PASS__@${OBFS_ESC2}@g" \
         -e "s@__SNI_LINE__@${SNI_ESC2}@g" \
+        -e "s@__VERIFY_LINE__@${VERIFY_ESC2}@g" \
         "${local_tmp}" > "${local_target}"
     rm -f "${local_tmp}"
     echo "[OK] Clash 订阅已写入：${local_target}"
