@@ -697,14 +697,8 @@ fi
 
 # 启动额外端口实例（自签 TLS）
 if [ -n "${HY2_PORTS:-}" ]; then
-  ensure_systemd_template
-  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-  for pt in "${ports_all[@]}"; do
-    if [ "$pt" != "$HY2_PORT" ]; then
-      start_hysteria_instance "$pt"
-    fi
-  done
-  ensure_udp_ports_open "$PORT_LIST_CSV"
+  # 通过封装函数写入各端口配置并启动实例
+  start_additional_instances_with_tls
 fi
 
 
