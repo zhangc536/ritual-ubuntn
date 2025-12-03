@@ -343,7 +343,7 @@ start_additional_instances_with_acme_cache() { return 0; }
 
 # ---- helper: 生成自签证书并导入到 /acme/shared ----
 generate_self_signed_cert() {
-  local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
+  local dom="${SWITCHED_DOMAIN:-${HY2_DOMAIN:-}}"
   local ip="$SELECTED_IP"
   mkdir -p /acme/shared
   if ! command -v openssl >/dev/null 2>&1; then
@@ -906,7 +906,11 @@ EOF
     if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
       SNI_LINE2=""
     else
-      SNI_LINE2="sni: ${HY2_DOMAIN}"
+      if [ -n "${HY2_DOMAIN:-}" ]; then
+        SNI_LINE2="sni: ${HY2_DOMAIN}"
+      else
+        SNI_LINE2=""
+      fi
     fi
     SNI_ESC2="$(escape_for_sed "${SNI_LINE2}")"
     sed -e "s@__NAME_TAG__@${NAME_ESC2}@g" \
