@@ -341,6 +341,60 @@ try_import_from_traefik_acme_json() { return 1; }
 # ---- helper: 使用 ACME 缓存目录启动额外端口（已移除） ----
 start_additional_instances_with_acme_cache() { return 0; }
 
+# ---- helper: 生成自签证书并导入到 /acme/shared ----
+generate_self_signed_cert() {
+  local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
+  local ip="$SELECTED_IP"
+  mkdir -p /acme/shared
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "[*] 未检测到 openssl，尝试自动安装..."
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y openssl >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y openssl >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y openssl >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache openssl >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    echo "[*] 生成自签证书（包含 IP SAN）..."
+    # 构造 SAN 扩展：若未设置域名，仅使用 IP SAN
+    local san_ext
+    if [ -n "$dom" ]; then
+      san_ext="subjectAltName=DNS:${dom},IP:${ip}"
+    else
+      san_ext="subjectAltName=IP:${ip}"
+    fi
+    # CN 为空时回退为 IP，确保兼容性
+    local cn_val
+    cn_val="${dom:-$ip}"
+    # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
+    if openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
+      -days 365 -subj "/CN=${cn_val}" -addext "$san_ext" >/dev/null 2>&1; then
+      :
+    else
+      openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
+        -days 365 -subj "/CN=${cn_val}" >/dev/null 2>&1 || true
+    fi
+    # 计算 SPKI pin（供客户端使用 pinSHA256，避免 insecure）
+    PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
+      openssl pkey -pubin -outform DER 2>/dev/null | \
+      openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
+    PIN_SHA256="${PIN_SHA256:-}"
+    USE_EXISTING_CERT=1
+    USE_CERT_PATH="/acme/shared/fullchain.pem"
+    USE_KEY_PATH="/acme/shared/privkey.pem"
+    echo "[OK] 自签证书已生成并导入 /acme/shared"
+  else
+    echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 后重试。"
+  fi
+}
+
 # ===========================
 # helper: 定义定时维护任务（每天清缓存+硬重启）
 # ===========================
@@ -910,56 +964,4 @@ if [ -n "${HY2_PORTS:-}" ]; then
 fi
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
-# ---- helper: 生成自签证书并导入到 /acme/shared ----
-generate_self_signed_cert() {
-  local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
-  local ip="$SELECTED_IP"
-  mkdir -p /acme/shared
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "[*] 未检测到 openssl，尝试自动安装..."
-    if command -v apt-get >/dev/null 2>&1; then
-      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
-      DEBIAN_FRONTEND=noninteractive apt-get install -y openssl >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y openssl >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y openssl >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache openssl >/dev/null 2>&1 || true
-    fi
-  fi
-  if command -v openssl >/dev/null 2>&1; then
-    echo "[*] 生成自签证书（包含 IP SAN）..."
-    # 构造 SAN 扩展：若未设置域名，仅使用 IP SAN
-    local san_ext
-    if [ -n "$dom" ]; then
-      san_ext="subjectAltName=DNS:${dom},IP:${ip}"
-    else
-      san_ext="subjectAltName=IP:${ip}"
-    fi
-    # CN 为空时回退为 IP，确保兼容性
-    local cn_val
-    cn_val="${dom:-$ip}"
-    # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
-    if openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
-      -days 365 -subj "/CN=${cn_val}" -addext "$san_ext" >/dev/null 2>&1; then
-      :
-    else
-      openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
-        -days 365 -subj "/CN=${cn_val}" >/dev/null 2>&1 || true
-    fi
-    # 计算 SPKI pin（供客户端使用 pinSHA256，避免 insecure）
-    PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
-      openssl pkey -pubin -outform DER 2>/dev/null | \
-      openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
-    PIN_SHA256="${PIN_SHA256:-}"
-    USE_EXISTING_CERT=1
-    USE_CERT_PATH="/acme/shared/fullchain.pem"
-    USE_KEY_PATH="/acme/shared/privkey.pem"
-    echo "[OK] 自签证书已生成并导入 /acme/shared"
-  else
-echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 后重试。"
-  fi
-}
+# （此处函数已前移至 helper 区域，避免在调用前未定义）
