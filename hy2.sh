@@ -6,14 +6,12 @@ set -euo pipefail
 #  0) 选择模式（全新安装 / 仅维护任务）
 #  1) 获取公网 IPv4
 #  2) 安装依赖（如缺失）
-#  3) 域名处理（支持自定义域名；已移除动态域名服务）
+#  3) 域名处理（支持自定义域名；动态域名服务已移除）
 #  4) 安装 hysteria 二进制（若不存在）
 #  5) 生成主/多端口密码与端口列表（如未提供）
-#  6) 检查 /acme 现有证书；否则准备 ACME（并确保 80/tcp 可用）
-#  7) 写主端口与多端口配置（TLS 或 ACME）并启动（systemd 或直接模式回退）
-#  8) 等待 ACME 完成，尝试从常见路径导入证书（Nginx/Apache/Caddy/Traefik 等）
-#  9) 恢复 80/tcp 上被暂时停止的服务
-# 10) 打印进程与监听检查、构造 URI、生成 Clash 订阅并通过 Nginx 提供
+#  6) 生成自签证书（含 IP SAN，域名可选作为 CN/SAN）并计算指纹
+#  7) 写主端口与多端口配置并启动（始终 TLS，自签证书）
+#  8) 打印进程与监听检查、构造 URI、生成 Clash 订阅并通过 Nginx 提供
 #
 # 说明：所有 helper 函数在前置定义；主流程按以上顺序执行，避免“未定义函数”或“端口占用”导致失败。
 # =============================================================
@@ -121,8 +119,7 @@ gen_credentials_for_ports() {
 write_hysteria_config_for_port() {
   local port="$1"; local pass="$2"; local obfsp="$3"; local use_tls="$4"
   mkdir -p /etc/hysteria
-  if [ "$use_tls" = "1" ]; then
-    cat >"/etc/hysteria/config-${port}.yaml" <<EOF
+  cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
 protocol: udp
 
@@ -139,37 +136,13 @@ tls:
   cert: ${USE_CERT_PATH}
   key: ${USE_KEY_PATH}
 EOF
-  else
-    mkdir -p /acme/autocert
-    cat >"/etc/hysteria/config-${port}.yaml" <<EOF
-listen: :${port}
-protocol: udp
-
-auth:
-  type: password
-  password: ${pass}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${obfsp}
-
-acme:
-  domains:
-    - ${HY2_DOMAIN}
-  dir: /acme/autocert
-  type: http
-  listenHost: 0.0.0.0
-EOF
-  fi
 }
 
-# ---- helper: 写主端口 /etc/hysteria/config.yaml（TLS 或 ACME） ----
+# ---- helper: 写主端口 /etc/hysteria/config.yaml（始终 TLS，自签证书） ----
 write_hysteria_main_config() {
   local use_tls="$1"
-  mkdir -p /etc/hysteria /acme/autocert
-  if [ "$use_tls" = "1" ]; then
-    cat >/etc/hysteria/config.yaml <<EOF
+  mkdir -p /etc/hysteria
+  cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
 protocol: udp
 
@@ -186,28 +159,6 @@ tls:
   cert: ${USE_CERT_PATH}
   key: ${USE_KEY_PATH}
 EOF
-  else
-    cat >/etc/hysteria/config.yaml <<EOF
-listen: :${HY2_PORT}
-protocol: udp
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-
-acme:
-  domains:
-    - ${HY2_DOMAIN}
-  dir: /acme/autocert
-  type: http
-  listenHost: 0.0.0.0
-EOF
-  fi
 }
 
 # ---- helper: 使用 TLS 启动额外端口实例（基于 PORT_LIST_CSV） ----
@@ -330,7 +281,7 @@ start_port_service_direct() {
   sleep 1
 }
 
-# ---- helper: 开放 TCP 端口（用于 ACME 的 80/tcp） ----
+# ---- helper: 开放 TCP 端口（按需） ----
 ensure_tcp_port_open() {
   local list_csv="$1"
   local opened=0
@@ -356,540 +307,39 @@ ensure_tcp_port_open() {
   fi
 }
 
-# ---- helper: 申请 ACME 前确保 80 可用（自动停止 nginx/apache 并开放 80/tcp） ----
+# ---- helper: 兼容占位：80 端口可用性检查（已移除 ACME 相关逻辑） ----
 STOPPED_NGINX=0
 STOPPED_APACHE=0
 STOPPED_CADDY=0
 STOPPED_TRAEFIK=0
 PORT80_FREE=1
-ensure_port_80_available() {
-  # 开放 80/tcp
-  ensure_tcp_port_open "80"
+ensure_port_80_available() { :; }
 
-  # 检查并停止常见占用者
-  if systemctl is-active --quiet nginx 2>/dev/null; then
-    echo "[INFO] 检测到 nginx 正在运行，申请证书将占用 80/tcp，暂时停止 nginx..."
-    systemctl stop nginx 2>/dev/null || true
-    STOPPED_NGINX=1
-  fi
-  if systemctl is-active --quiet apache2 2>/dev/null; then
-    echo "[INFO] 检测到 apache2 正在运行，申请证书将占用 80/tcp，暂时停止 apache2..."
-    systemctl stop apache2 2>/dev/null || true
-    STOPPED_APACHE=1
-  fi
-  if systemctl is-active --quiet caddy 2>/dev/null; then
-    echo "[INFO] 检测到 caddy 正在运行，申请证书将占用 80/tcp，暂时停止 caddy..."
-    systemctl stop caddy 2>/dev/null || true
-    STOPPED_CADDY=1
-  fi
-  if systemctl is-active --quiet traefik 2>/dev/null; then
-    echo "[INFO] 检测到 traefik 正在运行，申请证书将占用 80/tcp，暂时停止 traefik..."
-    systemctl stop traefik 2>/dev/null || true
-    STOPPED_TRAEFIK=1
-  fi
+restore_port_80_services_if_stopped() { :; }
 
-  # 二次检测占用情况
-  PORT80_FREE=1
-  if command -v ss >/dev/null 2>&1; then
-    if ss -ltnp | grep -E "\b:80\b" >/dev/null 2>&1; then PORT80_FREE=0; fi
-  elif command -v netstat >/dev/null 2>&1; then
-    if netstat -lntp 2>/dev/null | grep -E "\b:80\b" >/dev/null; then PORT80_FREE=0; fi
-  elif command -v lsof >/dev/null 2>&1; then
-    if lsof -nP -iTCP:80 -sTCP:LISTEN >/dev/null 2>&1; then PORT80_FREE=0; fi
-  fi
-  if [ "$PORT80_FREE" -eq 0 ]; then
-    echo "[WARN] 80/tcp 仍被占用，ACME HTTP-01 可能无法启动。"
-    echo "      请确认没有其他进程占用 80 端口（如反向代理或容器），或手动释放后重试。"
-  else
-    echo "[OK] 80/tcp 可用，ACME 可正常运行"
-  fi
-}
-
-restore_port_80_services_if_stopped() {
-  if [ "$STOPPED_NGINX" -eq 1 ]; then
-    echo "[INFO] 恢复 nginx 服务..."
-    systemctl start nginx 2>/dev/null || true
-    STOPPED_NGINX=0
-  fi
-  if [ "$STOPPED_APACHE" -eq 1 ]; then
-    echo "[INFO] 恢复 apache2 服务..."
-    systemctl start apache2 2>/dev/null || true
-    STOPPED_APACHE=0
-  fi
-  if [ "$STOPPED_CADDY" -eq 1 ]; then
-    echo "[INFO] 恢复 caddy 服务..."
-    systemctl start caddy 2>/dev/null || true
-    STOPPED_CADDY=0
-  fi
-  if [ "$STOPPED_TRAEFIK" -eq 1 ]; then
-    echo "[INFO] 恢复 traefik 服务..."
-    systemctl start traefik 2>/dev/null || true
-    STOPPED_TRAEFIK=0
-  fi
-}
-
-# 预申请证书：优先使用 acme.sh 的 standalone 模式在 80/tcp 上申请证书
-# 成功后将证书链接/复制到 /acme/shared 并设置 USE_EXISTING_CERT=1
+# ACME 预申请逻辑已移除（改为始终使用自签证书）
 try_issue_cert_preflight() {
-  # 允许通过环境变量禁用预申请
-  if [ "${DISABLE_PREFLIGHT_ACME:-0}" -eq 1 ]; then
-    echo "[INFO] 已禁用预申请证书逻辑（DISABLE_PREFLIGHT_ACME=1）"
-    return 1
-  fi
-
-  local domain="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
-  local acme_bin=""
-
-  # 若未设置域名，则无法进行 ACME 预申请
-  if [ -z "$domain" ]; then
-    echo "[ERROR] 未设置 HY2_DOMAIN，且已移除动态域名服务；无法进行 ACME 预申请。"
-echo "       请设置 HY2_DOMAIN 或设置 DISABLE_SELF_SIGNED=0 使用自签 + 指纹。"
-    return 1
-  fi
-
-  # 查找 acme.sh
-  if command -v acme.sh >/dev/null 2>&1; then
-    acme_bin="$(command -v acme.sh)"
-  elif [ -x "/root/.acme.sh/acme.sh" ]; then
-    acme_bin="/root/.acme.sh/acme.sh"
-  else
-    echo "[INFO] 未发现 acme.sh，尝试安装（仅本机，可能耗时 5-15s）"
-    # 官方安装脚本（如设置 ACME_EMAIL 则会注册账户）
-    if command -v curl >/dev/null 2>&1; then
-      if [ -n "${ACME_EMAIL:-}" ]; then
-        curl -fsSL https://get.acme.sh | sh -s email="${ACME_EMAIL}" >/dev/null 2>&1 || true
-      else
-        curl -fsSL https://get.acme.sh | sh >/dev/null 2>&1 || true
-      fi
-    elif command -v wget >/dev/null 2>&1; then
-      if [ -n "${ACME_EMAIL:-}" ]; then
-        wget -qO- https://get.acme.sh | sh -s email="${ACME_EMAIL}" >/dev/null 2>&1 || true
-      else
-        wget -qO- https://get.acme.sh | sh >/dev/null 2>&1 || true
-      fi
-    fi
-    if [ -x "/root/.acme.sh/acme.sh" ]; then
-      acme_bin="/root/.acme.sh/acme.sh"
-    fi
-  fi
-
-  if [ -z "$acme_bin" ]; then
-    echo "[WARN] 未能准备 acme.sh，跳过预申请"
-    return 1
-  fi
-
-  # 设置默认 CA（支持 ACME_SERVER=letsencrypt|zerossl|buypass 等）
-  "$acme_bin" --set-default-ca --server "${ACME_SERVER:-letsencrypt}" >/dev/null 2>&1 || true
-  # 可选注册账户（letsencrypt 不强制 email，zerossl 需要）
-  if [ -n "${ACME_EMAIL:-}" ]; then
-    "$acme_bin" --register-account -m "${ACME_EMAIL}" --server "${ACME_SERVER:-letsencrypt}" >/dev/null 2>&1 || true
-  fi
-
-  echo "[INFO] 预申请证书（standalone/http-01）：$domain"
-  # acme.sh standalone 需要 socat；自动安装以避免 "Please install socat tools first"
-  if ! command -v socat >/dev/null 2>&1; then
-    echo "[INFO] 检测到缺少 socat，开始安装..."
-    if command -v apt-get >/dev/null 2>&1; then
-      DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
-      DEBIAN_FRONTEND=noninteractive apt-get install -y socat >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y socat >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y socat >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache socat >/dev/null 2>&1 || true
-    elif command -v zypper >/dev/null 2>&1; then
-      zypper install -y socat >/dev/null 2>&1 || true
-    elif command -v pacman >/dev/null 2>&1; then
-      pacman -Sy --noconfirm socat >/dev/null 2>&1 || true
-    fi
-    if command -v socat >/dev/null 2>&1; then
-      echo "[OK] socat 安装成功"
-    else
-      echo "[WARN] 无法安装 socat，预申请可能失败"
-    fi
-  fi
-  # acme.sh 会自行占用 80/tcp；确保前面已释放 80
-  # 可选启用暂存环境以避开生产速率限制：ACME_STAGING=1
-  local issue_args=(--issue --standalone -d "$domain" --force)
-  if [ "${ACME_STAGING:-0}" -eq 1 ]; then
-    issue_args+=(--staging)
-    echo "[INFO] 使用 Let’s Encrypt 暂存环境进行预申请（不受生产速率限制，证书不可信）"
-  fi
-  local acme_output
-  if ! acme_output=$("$acme_bin" "${issue_args[@]}" 2>&1); then
-    if echo "$acme_output" | grep -E -iq "(rateLimited|too many certificates\s*\(5\)\s*already issued for this exact set of identifiers)"; then
-echo "[WARN] 预申请命中速率限制。已移除动态域名切换；建议设置 ACME_SERVER=zerossl 或 buypass，或稍后重试，或设置 DISABLE_SELF_SIGNED=0 使用自签。"
-    else
-      echo "[WARN] acme.sh 预申请失败"
-    fi
-    return 1
-  fi
-
-  # 安装/链接证书到共享目录
-  local base="$HOME/.acme.sh/$domain"
-  local full="$base/fullchain.cer"
-  local key="$base/$domain.key"
-  if [ ! -f "$full" ] || [ ! -f "$key" ]; then
-    echo "[WARN] 未找到预申请产出的证书文件"
-    return 1
-  fi
-
-  mkdir -p /acme/shared
-  ln -sf "$full" /acme/shared/fullchain.pem 2>/dev/null || cp -f "$full" /acme/shared/fullchain.pem
-  ln -sf "$key" /acme/shared/privkey.pem 2>/dev/null || cp -f "$key" /acme/shared/privkey.pem
-  USE_EXISTING_CERT=1
-  USE_CERT_PATH="/acme/shared/fullchain.pem"
-  USE_KEY_PATH="/acme/shared/privkey.pem"
-  CERT_ORIG_PATH="$full"
-  KEY_ORIG_PATH="$key"
-  echo "[OK] 预申请成功，证书已链接到 /acme/shared，将使用 TLS 配置"
-  echo "[OK] 抓取证书源路径：cert=$CERT_ORIG_PATH key=$KEY_ORIG_PATH"
-  return 0
-}
-
-# ---- helper: 在 ACME 成功后尝试从常见路径导入主服务证书 ----
-try_import_main_cert_shared() {
-  # 仅在当前未检测到 /acme 证书时尝试导入
-  if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-    return 0
-  fi
-
-  # 支持域名切换后的匹配
-  local domain="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
-  # 常见缓存目录（包括脚本配置的 /acme/autocert）
-  local candidates=(
-    "/acme/autocert"
-    "/root/.cache/autocert"
-    "/root/.acme.sh"
-    "/var/lib/hysteria"
-    "/etc/hysteria"
-    "/var/cache/hysteria"
-    "/etc/letsencrypt/live"
-    "/etc/ssl"
-    "/etc/nginx"
-    "/usr/local/etc/nginx"
-    "/etc/apache2"
-    "/etc/httpd"
-    "/etc/pki/tls"
-    "/etc/caddy"
-    "/var/lib/caddy"
-    "/etc/traefik"
-    "/var/lib/traefik"
-  )
-
-  # 证书域名/SAN 校验 + 私钥匹配校验
-  verify_cert_key_pair() {
-    local cert="$1" key="$2" dom="$3"
-    if ! command -v openssl >/dev/null 2>&1; then
-      # 无 openssl 时不做严格校验，直接接受
-      return 0
-    fi
-
-    # 证书未来 24h 不过期
-    if ! openssl x509 -checkend 86400 -noout -in "$cert" >/dev/null 2>&1; then
-      return 1
-    fi
-
-    # 域名匹配（SubjectAltName 或 CN）
-    cert_domain_matches() {
-      local c="$1" d="$2"
-      local san_entries=()
-      mapfile -t san_entries < <(openssl x509 -noout -ext subjectAltName -in "$c" 2>/dev/null | grep -o -E 'DNS:[^,]+' | sed 's/^DNS://')
-      # 直接匹配
-      for e in "${san_entries[@]}"; do
-        [ "$e" = "$d" ] && return 0
-      done
-      # 通配符匹配（*.example.com 匹配 foo.example.com）
-      for e in "${san_entries[@]}"; do
-        case "$e" in
-          \*.*)
-            local suffix="${e#*.}"
-            case "$d" in
-              *."$suffix") return 0;;
-            esac
-            ;;
-        esac
-      done
-      # 退化为 CN 匹配
-      local cn
-      cn="$(openssl x509 -noout -subject -in "$c" 2>/dev/null | grep -o -E 'CN=[^/,]+' | head -n1 | sed 's/^CN=//')"
-      [ -n "$cn" ] && [ "$cn" = "$d" ]
-    }
-    cert_domain_matches "$cert" "$dom" || return 1
-
-    # 证书与私钥是否匹配：比较公钥哈希（兼容 RSA/ECDSA）
-    local cert_pub_hash key_pub_hash
-    cert_pub_hash="$(openssl x509 -noout -pubkey -in "$cert" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}')"
-    key_pub_hash="$(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}')"
-    [ -n "$cert_pub_hash" ] && [ -n "$key_pub_hash" ] && [ "$cert_pub_hash" = "$key_pub_hash" ]
-  }
-
-  # 在 /acme/shared 放置证书与私钥：优先使用符号链接以跟随轮转；必要时回退复制
-  link_or_copy() {
-    local src="$1" dst="$2"
-    ln -sf "$src" "$dst" 2>/dev/null || cp -f "$src" "$dst" 2>/dev/null || cat "$src" >"$dst"
-  }
-
-  place_cert_and_key() {
-    local cert_src="$1" key_src="$2"
-    mkdir -p /acme/shared
-    local cert_dir
-    cert_dir="$(dirname "$cert_src")"
-    if [ -f "$cert_dir/fullchain.pem" ]; then
-      link_or_copy "$cert_dir/fullchain.pem" /acme/shared/fullchain.pem
-      echo "[INFO] 使用符号链接/复制指向源 fullchain.pem，以跟随上游轮转"
-      CERT_ORIG_PATH="$cert_dir/fullchain.pem"
-    else
-      # 若发现 chain.pem，但无 fullchain，尝试合并；否则直接链接/复制源证书
-      if [ -f "$cert_dir/chain.pem" ]; then
-        if cat "$cert_src" "$cert_dir/chain.pem" > /acme/shared/fullchain.pem 2>/dev/null; then
-          echo "[INFO] 源路径无 fullchain.pem，已合并 cert+chain 到 /acme/shared/fullchain.pem（轮转后需重跑脚本以更新）"
-          CERT_ORIG_PATH="$cert_src"
-          CERT_CHAIN_ORIG_PATH="$cert_dir/chain.pem"
-        else
-          link_or_copy "$cert_src" /acme/shared/fullchain.pem
-          echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
-          CERT_ORIG_PATH="$cert_src"
-        fi
-      else
-        link_or_copy "$cert_src" /acme/shared/fullchain.pem
-        echo "[INFO] 已链接/复制源证书到 /acme/shared/fullchain.pem"
-        CERT_ORIG_PATH="$cert_src"
-      fi
-    fi
-    link_or_copy "$key_src" /acme/shared/privkey.pem
-    KEY_ORIG_PATH="$key_src"
-    USE_EXISTING_CERT=1
-    USE_CERT_PATH="/acme/shared/fullchain.pem"
-    USE_KEY_PATH="/acme/shared/privkey.pem"
-    echo "[OK] 抓取证书源路径：cert=${CERT_ORIG_PATH:-unknown} key=${KEY_ORIG_PATH:-unknown}"
-  }
-
-  local found_cert="" found_key=""
-  for d in "${candidates[@]}"; do
-    [ -d "$d" ] || continue
-    # 在候选目录下尽可能多地找出证书/私钥候选
-    mapfile -t certs < <(find "$d" -maxdepth 6 \( -type f -o -type l \) \( \
-      -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" -o -name "*.crt" -o -name "*.cer" \
-    \) 2>/dev/null)
-    mapfile -t keys < <(find "$d" -maxdepth 6 \( -type f -o -type l \) \( \
-      -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \
-    \) 2>/dev/null)
-
-    # 优先同目录匹配；否则尝试跨目录匹配
-    for c in "${certs[@]}"; do
-      # 优先找同目录下的密钥
-      local base_dir
-      base_dir="$(dirname "$c")"
-      local k_same
-      k_same="$(find "$base_dir" -maxdepth 1 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
-      if [ -n "$k_same" ] && verify_cert_key_pair "$c" "$k_same" "$domain"; then
-        found_cert="$c"; found_key="$k_same"; break
-      fi
-      # 退化为跨目录匹配
-      for k in "${keys[@]}"; do
-        if verify_cert_key_pair "$c" "$k" "$domain"; then
-          found_cert="$c"; found_key="$k"; break
-        fi
-      done
-      [ -n "$found_cert" ] && break
-    done
-
-    if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
-      place_cert_and_key "$found_cert" "$found_key"
-      echo "[OK] 已从主服务导入证书到 /acme/shared（校验通过），用于多端口实例"
-      return 0
-    fi
-  done
-
-  # 额外扫描常见家目录 ACME 路径（若存在）
-  for d in /home/*/.acme.sh /home/*/.lego /home/*/.certbot /home/*/letsencrypt/live /var/www/cert; do
-    [ -d "$d" ] || continue
-    mapfile -t certs < <(find "$d" -maxdepth 4 \( -type f -o -type l \) \( -name "*fullchain*.pem" -o -name "*${domain}*.crt" -o -name "*${domain}*.cer" -o -name "*cert*.pem" -o -name "*.crt" -o -name "*.cer" \) 2>/dev/null)
-    mapfile -t keys < <(find "$d" -maxdepth 4 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null)
-    for c in "${certs[@]}"; do
-      local base_dir k_same
-      base_dir="$(dirname "$c")";
-      k_same="$(find "$base_dir" -maxdepth 1 \( -type f -o -type l \) \( -name "*privkey*.pem" -o -name "*${domain}*.key" -o -name "*key*.pem" -o -name "*.key" \) 2>/dev/null | head -n1)"
-      if [ -n "$k_same" ] && verify_cert_key_pair "$c" "$k_same" "$domain"; then
-        found_cert="$c"; found_key="$k_same"; break
-      fi
-      for k in "${keys[@]}"; do
-        if verify_cert_key_pair "$c" "$k" "$domain"; then
-          found_cert="$c"; found_key="$k"; break
-        fi
-      done
-      [ -n "$found_cert" ] && break
-    done
-    if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
-      place_cert_and_key "$found_cert" "$found_key"
-      echo "[OK] 已从家目录 ACME 路径导入证书到 /acme/shared（校验通过）"
-      return 0
-    fi
-  done
-
-  # 从 Nginx/Apache 配置提取证书路径并导入（若找到）
-  try_import_from_nginx_configs "$domain" && return 0 || true
-  try_import_from_apache_configs "$domain" && return 0 || true
-  try_import_from_caddy_storage "$domain" && return 0 || true
-  try_import_from_traefik_acme_json "$domain" && return 0 || true
-
-  echo "[WARN] 未能定位主服务证书缓存文件，仍将仅运行主端口。若需多端口，请将证书放入 /acme/<dir>/fullchain.pem 与 privkey.pem。"
   return 1
 }
+ 
 
-# ---- helper: 从 Nginx 配置导入证书 ----
-try_import_from_nginx_configs() {
-  local dom="$1"
-  local cfg_dirs=(
-    "/etc/nginx" "/usr/local/etc/nginx"
-  )
-  for cd in "${cfg_dirs[@]}"; do
-    [ -d "$cd" ] || continue
-    # 提取所有证书/密钥路径
-    mapfile -t cert_paths < <(grep -R -E "^\s*ssl_certificate\s+" "$cd" 2>/dev/null | awk '{print $2}' | sed 's/;\s*$//' | sort -u)
-    mapfile -t key_paths < <(grep -R -E "^\s*ssl_certificate_key\s+" "$cd" 2>/dev/null | awk '{print $2}' | sed 's/;\s*$//' | sort -u)
-    for c in "${cert_paths[@]}"; do
-      [ -f "$c" ] || continue
-      local k
-      # 同目录优先
-      k="$(dirname "$c")"; k="$k/privkey.pem"; [ -f "$k" ] || k=""
-      if [ -z "$k" ]; then
-        for kp in "${key_paths[@]}"; do
-          [ -f "$kp" ] && { k="$kp"; break; }
-        done
-      fi
-      [ -n "$k" ] || continue
-      if verify_cert_key_pair "$c" "$k" "$dom"; then
-        place_cert_and_key "$c" "$k"
-        echo "[OK] 已从 Nginx 配置导入证书（优先链接 fullchain 以跟随轮转）"
-        return 0
-      fi
-    done
-  done
-  return 1
-}
+# ---- helper: 在 ACME 成功后尝试从常见路径导入主服务证书（已移除） ----
+try_import_main_cert_shared() { return 1; }
 
-# ---- helper: 从 Apache 配置导入证书 ----
-try_import_from_apache_configs() {
-  local dom="$1"
-  local cfg_dirs=("/etc/apache2" "/etc/httpd")
-  for cd in "${cfg_dirs[@]}"; do
-    [ -d "$cd" ] || continue
-    mapfile -t cert_paths < <(grep -R -E "^\s*SSLCertificateFile\s+" "$cd" 2>/dev/null | awk '{print $2}' | sort -u)
-    mapfile -t key_paths < <(grep -R -E "^\s*SSLCertificateKeyFile\s+" "$cd" 2>/dev/null | awk '{print $2}' | sort -u)
-    for c in "${cert_paths[@]}"; do
-      [ -f "$c" ] || continue
-      local k=""
-      for kp in "${key_paths[@]}"; do
-        [ -f "$kp" ] && { k="$kp"; break; }
-      done
-      [ -n "$k" ] || continue
-      if verify_cert_key_pair "$c" "$k" "$dom"; then
-        place_cert_and_key "$c" "$k"
-        echo "[OK] 已从 Apache 配置导入证书（优先链接 fullchain 以跟随轮转）"
-        return 0
-      fi
-    done
-  done
-  return 1
-}
+# ---- helper: 从 Nginx 配置导入证书（已移除） ----
+try_import_from_nginx_configs() { return 1; }
 
-# ---- helper: 从 Caddy 存储导入证书 ----
-try_import_from_caddy_storage() {
-  local dom="$1"; local base="/var/lib/caddy/.local/share/caddy/certificates"
-  [ -d "$base" ] || return 1
-  mapfile -t certs < <(find "$base" -maxdepth 6 \( -type f -o -type l \) -name "*.crt" 2>/dev/null)
-  for c in "${certs[@]}"; do
-    local dname
-    dname="$(basename "$c" .crt)"
-    # 尝试按同名 key
-    local k="${c%.crt}.key"
-    [ -f "$k" ] || continue
-    if verify_cert_key_pair "$c" "$k" "$dom"; then
-      place_cert_and_key "$c" "$k"
-      echo "[OK] 已从 Caddy 存储导入证书（优先链接 fullchain 以跟随轮转）"
-      return 0
-    fi
-  done
-  return 1
-}
+# ---- helper: 从 Apache 配置导入证书（已移除） ----
+try_import_from_apache_configs() { return 1; }
 
-# ---- helper: 从 Traefik acme.json 导入证书 ----
-try_import_from_traefik_acme_json() {
-  local dom="$1"; local json="/var/lib/traefik/acme.json"
-  [ -f "$json" ] || return 1
-  if ! command -v python3 >/dev/null 2>&1; then return 1; fi
-  python3 - "$json" "$dom" <<'PY' && exit 0 || exit 1
-import sys, json, base64
-path = sys.argv[1]
-dom = sys.argv[2]
-with open(path, 'r', encoding='utf-8') as f:
-    data = json.load(f)
-def iter_certs(d):
-    # Traefik 不同版本结构不同，尽量兼容
-    stores = []
-    for k in ('Certificates', 'Store', 'http', 'tls', 'store', 'acme'): 
-        v = d.get(k)
-        if isinstance(v, dict): d = v
-    # 最常见结构
-    for provider in d.values():
-        if isinstance(provider, dict):
-            for entry in provider.get('Certificates', []):
-                yield entry
-            # 可能的备用键
-            for entry in provider.get('Store', {}).get('Certificates', []):
-                yield entry
-itered = list(iter_certs(data))
-match = None
-for e in itered:
-    doms = []
-    if 'domain' in e:
-        if isinstance(e['domain'], dict):
-            doms.append(e['domain'].get('main'))
-            doms += e['domain'].get('sans', []) or []
-        else:
-            doms.append(e['domain'])
-    for d in doms:
-        if d == dom or (isinstance(d, str) and d.startswith('*.') and dom.endswith(d[2:])):
-            match = e; break
-    if match: break
-if not match:
-    sys.exit(1)
-cert_b64 = match.get('certificate')
-key_b64 = match.get('key')
-if not cert_b64 or not key_b64:
-    sys.exit(1)
-cert = base64.b64decode(cert_b64)
-key = base64.b64decode(key_b64)
-open('/acme/shared/fullchain.pem', 'wb').write(cert)
-open('/acme/shared/privkey.pem', 'wb').write(key)
-print('[OK] 已从 Traefik acme.json 导入证书到 /acme/shared')
-PY
-  if [ $? -eq 0 ]; then
-    USE_EXISTING_CERT=1
-    USE_CERT_PATH="/acme/shared/fullchain.pem"
-    USE_KEY_PATH="/acme/shared/privkey.pem"
-    echo "[OK] 已从 Traefik 导入证书到 /acme/shared（内容复制；若轮转需重跑脚本）"
-    return 0
-  fi
-  return 1
-}
+# ---- helper: 从 Caddy 存储导入证书（已移除） ----
+try_import_from_caddy_storage() { return 1; }
 
-# ---- helper: 使用 ACME 缓存目录启动额外端口（导入失败的回退方案） ----
-start_additional_instances_with_acme_cache() {
-  [ -n "${HY2_PORTS:-}" ] || return 0
-  ensure_systemd_template
-  IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
-  for pt in "${ports_all[@]}"; do
-    [ "$pt" = "$HY2_PORT" ] && continue
-    # 使用 ACME dir 缓存（不会重复发起挑战，直接读取已缓存证书）
-    write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "0"
-    start_hysteria_instance "$pt"
-  done
-  ensure_udp_ports_open "$PORT_LIST_CSV"
-}
+# ---- helper: 从 Traefik acme.json 导入证书（已移除） ----
+try_import_from_traefik_acme_json() { return 1; }
+
+# ---- helper: 使用 ACME 缓存目录启动额外端口（已移除） ----
+start_additional_instances_with_acme_cache() { return 0; }
 
 # ===========================
 # helper: 定义定时维护任务（每天清缓存+硬重启）
@@ -1031,29 +481,12 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 域名处理（可选）
+# 2) 域名处理（可选，仅用于自签 CN/SAN）
 # ===========================
-if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ]; then
-  HY2_DOMAIN=""
-  echo "[INFO] 自签 + 指纹模式启用：不使用域名/SNI"
+if [ -n "${HY2_DOMAIN:-}" ]; then
+  echo "[OK] 使用自定义域名（用于证书 CN/SAN）：${HY2_DOMAIN}"
 else
-  if [ -n "${HY2_DOMAIN:-}" ]; then
-    echo "[OK] 使用自定义域名：${HY2_DOMAIN}"
-    # 可选校验解析是否指向本机 IP（不强制）
-    resolved_ip="$(getent ahostsv4 "$HY2_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-    if [ -z "$resolved_ip" ] && command -v nslookup >/dev/null 2>&1; then
-      resolved_ip="$(nslookup "$HY2_DOMAIN" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1 || true)"
-    fi
-    if [ -z "$resolved_ip" ] && command -v dig >/dev/null 2>&1; then
-      resolved_ip="$(dig +short "$HY2_DOMAIN" A 2>/dev/null | head -n1 || true)"
-    fi
-    if [ -n "$resolved_ip" ] && [ "$resolved_ip" != "$SELECTED_IP" ]; then
-      echo "[WARN] 域名解析到 ${resolved_ip}，与本机 ${SELECTED_IP} 不一致；ACME 可能失败"
-    fi
-  else
-    echo "[ERROR] 未设置 HY2_DOMAIN，且已移除动态域名服务。"
-    echo "       如需使用 ACME，请设置 HY2_DOMAIN 指向本机；或设置 DISABLE_SELF_SIGNED=0 使用自签 + 指纹。"
-  fi
+  echo "[INFO] 未设置域名，将仅使用 IP SAN 自签证书"
 fi
 
 # ===========================
@@ -1159,82 +592,20 @@ PORT_LIST_CSV="$(parse_port_list)"
 gen_credentials_for_ports "$PORT_LIST_CSV"
 
 # ===========================
-# 5) 在 /acme 下扫描子目录寻找 fullchain.pem + privkey.pem（优先使用）
+# 5) 生成自签证书（含 IP SAN，域名可作为 CN/SAN）
 # ===========================
-USE_EXISTING_CERT=0
+USE_EXISTING_CERT=1
 USE_CERT_PATH=""
 USE_KEY_PATH=""
-ACME_BASE="/acme"
-
-if [ -d "$ACME_BASE" ]; then
-  while IFS= read -r -d '' cert_dir; do
-    FULLCHAIN="${cert_dir}/fullchain.pem"
-    PRIVKEY="${cert_dir}/privkey.pem"
-    if [ -f "$FULLCHAIN" ] && [ -f "$PRIVKEY" ]; then
-      USE_EXISTING_CERT=1
-      USE_CERT_PATH="$FULLCHAIN"
-      USE_KEY_PATH="$PRIVKEY"
-      echo "[OK] 检测到证书：$FULLCHAIN"
-      break
-    fi
-  done < <(find "$ACME_BASE" -type d -print0)
-fi
-
-# 如设置 DISABLE_SELF_SIGNED=0，则跳过 ACME/导入并强制生成自签证书（自签+指纹）
-if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ]; then
-  echo "[INFO] 已启用自签 + 指纹模式：跳过 ACME 与现有证书，使用自签证书"
-  USE_EXISTING_CERT=0
-  USE_CERT_PATH=""
-  USE_KEY_PATH=""
-  generate_self_signed_cert
-fi
-
-if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[INFO] /acme 下未找到证书，先尝试预申请（standalone/http-01）..."
-  # 提前检查/释放 80/tcp，预申请将占用该端口
-  ensure_port_80_available
-  if try_issue_cert_preflight; then
-    echo "[OK] 预申请完成，已将证书放置到 /acme/shared"
-  else
-    echo "[INFO] 预申请失败，尝试从主服务缓存自动导入证书..."
-    if try_import_main_cert_shared; then
-      echo "[OK] 已自动导入主证书到 /acme/shared，将用于多端口实例"
-    else
-      echo "[INFO] 未能导入缓存，后续将使用内置 ACME（需 80/tcp 可达）"
-    fi
-  fi
-fi
+generate_self_signed_cert
 
 # ===========================
-# 6) 写 hysteria 配置（使用已找到的证书或 ACME 配置）
+# 6) 写 hysteria 配置（始终 TLS，自签证书）
 # ===========================
 mkdir -p /etc/hysteria
-if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-  write_hysteria_main_config 1
-  echo "[OK] 已写入 hysteria 配置（使用 /acme 证书）"
-  start_additional_instances_with_tls
-else
-  # 默认禁用自签证书回退；如需启用可设置 DISABLE_SELF_SIGNED=0
-  DISABLE_SELF_SIGNED=${DISABLE_SELF_SIGNED:-1}
-  if [ "$PORT80_FREE" -eq 1 ]; then
-    write_hysteria_main_config 0
-    echo "[OK] 已写入 hysteria 配置（使用 ACME HTTP-01）"
-  else
-    if [ "$DISABLE_SELF_SIGNED" -eq 1 ]; then
-      echo "[ERROR] 80/tcp 不可用且无现有证书，已禁用自签证书回退。"
-      echo "       请释放 80 端口或提供 /acme 证书后再运行。"
-      # 仍写入 ACME 配置，便于释放 80 后自动申请
-      write_hysteria_main_config 0
-      echo "[INFO] 已写入 ACME 配置，但启动可能失败，需释放 80/tcp。"
-    else
-      echo "[WARN] 80/tcp 不可用且无现有证书，启用自签回退以便临时启动"
-      generate_self_signed_cert
-      write_hysteria_main_config 1
-      SELF_SIGNED_USED=1
-      echo "[OK] 已写入 hysteria 配置（使用自签证书）"
-    fi
-  fi
-fi
+write_hysteria_main_config 1
+SELF_SIGNED_USED=1
+echo "[OK] 已写入 hysteria 配置（使用自签证书）"
 
 # ===========================
 # 7) systemd 服务 hysteria-server
@@ -1257,10 +628,6 @@ WantedBy=multi-user.target
 SVC
 
 systemctl daemon-reload
-if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  # 申请 ACME 前确保 80/tcp 可用并已放行
-  ensure_port_80_available
-fi
 if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now hysteria-server || true
   sleep 2
@@ -1274,8 +641,8 @@ else
   start_main_service_direct
 fi
 
-# 启动额外端口实例（需要 /acme 证书）
-if [ "$USE_EXISTING_CERT" -eq 1 ] && [ -n "${HY2_PORTS:-}" ]; then
+# 启动额外端口实例（自签 TLS）
+if [ -n "${HY2_PORTS:-}" ]; then
   ensure_systemd_template
   IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
   for pt in "${ports_all[@]}"; do
@@ -1288,70 +655,8 @@ fi
 
 
 # ===========================
-# 8) 如果没有现有证书则等待 ACME 产生日志（最多 60 秒）
+# 8) 进程与端口检查（已简化，移除 ACME 等待/恢复）
 # ===========================
-if [ "$USE_EXISTING_CERT" -eq 0 ]; then
-  echo "[*] 等待 hysteria ACME 证书申请完成（最多 60 秒）..."
-  TRIES=0
-  ACME_OK=0
-  RATE_LIMITED=0
-  
-  while [ $TRIES -lt 12 ]; do
-    # 检查证书申请成功
-    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
-      ACME_OK=1
-      break
-    fi
-    
-    # 检查 HTTP 429 速率限制错误
-    if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(429|rate.?limit|too.?many.?requests|rateLimited)"; then
-      RATE_LIMITED=1
-  echo "[WARN] 检测到 HTTP 429 速率限制错误。"
-      break
-    fi
-    
-    sleep 5
-    TRIES=$((TRIES+1))
-  done
-
-  # 处理速率限制：不再切换动态域名，给出建议
-  if [ "$RATE_LIMITED" -eq 1 ]; then
-    echo "[WARN] 检测到 ACME 速率限制（429）。已移除动态域名切换逻辑。"
-echo "       建议：设置 ACME_SERVER=zerossl 或 buypass，或稍后重试；如无需公信任，设置 DISABLE_SELF_SIGNED=0 使用自签 + 指纹。"
-  fi
-
-  if [ "$ACME_OK" -ne 1 ] && [ "$RATE_LIMITED" -eq 0 ]; then
-    echo "[WARN] 未检测到 ACME 成功日志，但可能证书已申请成功。检查日志详情："
-    journalctl -u hysteria-server -n 50 --no-pager | grep -E -i "(acme|certificate|tls-alpn|http-01|challenge|429|rate.?limit)" || true
-    echo "[INFO] 继续执行，证书可能已成功获取"
-  elif [ "$ACME_OK" -eq 1 ]; then
-    echo "[OK] ACME 证书申请成功检测到"
-    # 证书申请成功后，优先导入主证书并将主端口切换为 TLS
-    if try_import_main_cert_shared; then
-      write_hysteria_main_config 1
-      systemctl restart hysteria-server || true
-      echo "[OK] 主端口已切换为 TLS 证书运行"
-    else
-      echo "[WARN] 未能导入主证书缓存；主端口继续使用 ACME 配置运行"
-    fi
-
-    # 若启用多端口，仅在导入主证书成功后启动多实例（避免 ACME 并发占用 80/tcp）
-    if [ -n "${HY2_PORTS:-}" ]; then
-      if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-        start_additional_instances_with_tls
-      else
-        echo "[WARN] ACME 成功但未找到可导入证书，尝试使用 ACME 缓存启动多端口"
-        start_additional_instances_with_acme_cache
-        echo "[OK] 额外端口已基于 ACME 缓存启动"
-      fi
-    fi
-  fi
-else
-  echo "[OK] 使用现有 /acme 证书，跳过 ACME 等待"
-fi
-
-# 如果为申请证书暂时关闭了 80/tcp 上的服务，这里恢复
-restore_port_80_services_if_stopped
 
 # 在完成证书流程后，若未启用多端口，则至少放行主端口 UDP
 if [ -z "${HY2_PORTS:-}" ]; then
@@ -1387,12 +692,7 @@ NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1],
 PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$PIN_SHA256")"
 
 INSECURE_VAL=0
-# 自签 + 指纹模式下，始终保持 insecure=0 并输出 pinSHA256
-if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-  URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
-else
-  URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
-fi
+URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
 echo
 echo "=========== HY2 节点（URI） ==========="
@@ -1407,11 +707,7 @@ if [ -n "${HY2_PORTS:-}" ]; then
     P_PASS="${PASS_MAP[$pt]}"; P_OBFS="${OBFS_MAP[$pt]}"
     P_PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_PASS")"
     P_OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_OBFS")"
-    if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-      P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
-    else
-      P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
-    fi
+    P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
     echo "$pt -> $P_URI"
   done
   echo "======================================="
@@ -1480,11 +776,7 @@ IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
 PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
 PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
 OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
-if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-  SNI_LINE=""
-else
-  SNI_LINE="sni: ${HY2_DOMAIN}"
-fi
+SNI_LINE=""
 SNI_ESC="$(escape_for_sed "${SNI_LINE}")"
 
 sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
@@ -1668,6 +960,6 @@ generate_self_signed_cert() {
     USE_KEY_PATH="/acme/shared/privkey.pem"
     echo "[OK] 自签证书已生成并导入 /acme/shared"
   else
-    echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 或释放 80 端口以使用 ACME。"
+echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 后重试。"
   fi
 }
