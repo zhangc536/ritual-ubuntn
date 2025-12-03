@@ -763,96 +763,14 @@ if [ -n "${HY2_PORTS:-}" ]; then
 fi
 
 # ===========================
-# 10) 生成 ACL4SSR 规则的 Clash 订阅（模板写入 + 安全替换）
+# 10) 生成 ACL4SSR 规则的 Clash 订阅（整合所有端口到一个订阅）
 # ===========================
 mkdir -p "${CLASH_WEB_DIR}"
-
-cat > "${CLASH_OUT_PATH}.tmp" <<'EOF'
-port: 7890
-socks-port: 7891
-allow-lan: true
-mode: rule
-log-level: info
-external-controller: 127.0.0.1:9090
-
-dns:
-  enable: true
-  listen: 0.0.0.0:53
-  default-nameserver:
-    - 223.5.5.5
-    - 8.8.8.8
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  nameserver:
-    - https://doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
-
-proxies:
-  - name: "__NAME_TAG__"
-    type: hysteria2
-    server: __SELECTED_IP__
-    port: __HY2_PORT__
-    password: __HY2_PASS__
-    obfs: salamander
-    obfs-password: __OBFS_PASS__
-    __SNI_LINE__
-    __VERIFY_LINE__
-
-proxy-groups:
-  - name: "🚀 节点选择"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - DIRECT
-
-rules:
-  - DOMAIN-SUFFIX,cn,DIRECT
-  - DOMAIN-KEYWORD,baidu,DIRECT
-  - DOMAIN-KEYWORD,taobao,DIRECT
-  - DOMAIN-KEYWORD,qq,DIRECT
-  - DOMAIN-KEYWORD,weixin,DIRECT
-  - DOMAIN-KEYWORD,alipay,DIRECT
-  - GEOIP,CN,DIRECT
-  - MATCH,🚀 节点选择
-EOF
-
-# perform safe substitutions
-TMPF="${CLASH_OUT_PATH}.tmp"
 TARGET="${CLASH_OUT_PATH}"
+TMPF="${TARGET}.tmp"
 
-NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
-IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
-PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
-PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
-OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
-SNI_LINE=""
-VERIFY_LINE=""
-# 若使用自签证书，Clash 订阅默认跳过证书校验以避免握手失败
-if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
-  VERIFY_LINE="skip-cert-verify: true"
-fi
-SNI_ESC="$(escape_for_sed "${SNI_LINE}")"
-VERIFY_ESC="$(escape_for_sed "${VERIFY_LINE}")"
-sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
-    -e "s@__SELECTED_IP__@${IP_ESC}@g" \
-    -e "s@__HY2_PORT__@${PORT_ESC}@g" \
-    -e "s@__HY2_PASS__@${PASS_ESC}@g" \
-    -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
-    -e "s@__SNI_LINE__@${SNI_ESC}@g" \
-    -e "s@__VERIFY_LINE__@${VERIFY_ESC}@g" \
-    "${TMPF}" > "${TARGET}"
-rm -f "${TMPF}"
-
-echo "[OK] Clash 订阅已写入：${TARGET}"
-
-# 若启用多端口，为每端口生成独立订阅文件（与证书无关，仅生成文件）
-if [ -n "${HY2_PORTS:-}" ]; then
-  IFS=',' read -r -a clash_ports <<<"$PORT_LIST_CSV"
-  for pt in "${clash_ports[@]}"; do
-    [ "$pt" = "$HY2_PORT" ] && continue
-    local_tmp="${CLASH_WEB_DIR}/clash_${pt}.yaml.tmp"
-    local_target="${CLASH_WEB_DIR}/clash_${pt}.yaml"
-    cat >"${local_tmp}" <<'EOF'
+# 订阅头部（通用设置）
+cat >"${TMPF}" <<EOF
 port: 7890
 socks-port: 7891
 allow-lan: true
@@ -873,22 +791,61 @@ dns:
     - https://dns.alidns.com/dns-query
 
 proxies:
-  - name: "__NAME_TAG__"
+EOF
+
+# 生成每个端口的节点，name 使用端口号
+IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
+for pt in "${ports_all[@]}"; do
+  if [ "$pt" = "$HY2_PORT" ]; then
+    P_PASS="$HY2_PASS"
+    P_OBFS="$OBFS_PASS"
+  else
+    P_PASS="${PASS_MAP[$pt]}"
+    P_OBFS="${OBFS_MAP[$pt]}"
+  fi
+
+  # SNI 与证书校验
+  SNI_LINE=""
+  if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
+    SNI_LINE=""
+  else
+    if [ -n "${HY2_DOMAIN:-}" ]; then
+      SNI_LINE="sni: ${HY2_DOMAIN}"
+    fi
+  fi
+  VERIFY_LINE=""
+  if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
+    VERIFY_LINE="skip-cert-verify: true"
+  fi
+
+  cat >>"${TMPF}" <<EOF
+  - name: "${pt}"
     type: hysteria2
-    server: __SELECTED_IP__
-    port: __HY2_PORT__
-    password: __HY2_PASS__
+    server: ${SELECTED_IP}
+    port: ${pt}
+    password: ${P_PASS}
     obfs: salamander
-    obfs-password: __OBFS_PASS__
-    __SNI_LINE__
-    __VERIFY_LINE__
+    obfs-password: ${P_OBFS}
+EOF
+  [ -n "${SNI_LINE}" ] && echo "    ${SNI_LINE}" >>"${TMPF}"
+  [ -n "${VERIFY_LINE}" ] && echo "    ${VERIFY_LINE}" >>"${TMPF}"
+done
+
+# 选择组包含所有端口名
+cat >>"${TMPF}" <<'EOF'
 
 proxy-groups:
   - name: "🚀 节点选择"
     type: select
     proxies:
-      - "__NAME_TAG__"
-      - DIRECT
+EOF
+for pt in "${ports_all[@]}"; do
+  echo "      - \"${pt}\"" >>"${TMPF}"
+done
+echo "      - DIRECT" >>"${TMPF}"
+
+# 规则
+cat >>"${TMPF}" <<'EOF'
 
 rules:
   - DOMAIN-SUFFIX,cn,DIRECT
@@ -900,38 +857,9 @@ rules:
   - GEOIP,CN,DIRECT
   - MATCH,🚀 节点选择
 EOF
-    NAME_ESC2="$(escape_for_sed "${NAME_TAG}")"
-    IP_ESC2="$(escape_for_sed "${SELECTED_IP}")"
-    PORT_ESC2="$(escape_for_sed "${pt}")"
-    PASS_ESC2="$(escape_for_sed "${PASS_MAP[$pt]}")"
-    OBFS_ESC2="$(escape_for_sed "${OBFS_MAP[$pt]}")"
-    if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-      SNI_LINE2=""
-    else
-      if [ -n "${HY2_DOMAIN:-}" ]; then
-        SNI_LINE2="sni: ${HY2_DOMAIN}"
-      else
-        SNI_LINE2=""
-      fi
-    fi
-    VERIFY_LINE2=""
-    if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
-      VERIFY_LINE2="skip-cert-verify: true"
-    fi
-    SNI_ESC2="$(escape_for_sed "${SNI_LINE2}")"
-    VERIFY_ESC2="$(escape_for_sed "${VERIFY_LINE2}")"
-    sed -e "s@__NAME_TAG__@${NAME_ESC2}@g" \
-        -e "s@__SELECTED_IP__@${IP_ESC2}@g" \
-        -e "s@__HY2_PORT__@${PORT_ESC2}@g" \
-        -e "s@__HY2_PASS__@${PASS_ESC2}@g" \
-        -e "s@__OBFS_PASS__@${OBFS_ESC2}@g" \
-        -e "s@__SNI_LINE__@${SNI_ESC2}@g" \
-        -e "s@__VERIFY_LINE__@${VERIFY_ESC2}@g" \
-        "${local_tmp}" > "${local_target}"
-    rm -f "${local_tmp}"
-    echo "[OK] Clash 订阅已写入：${local_target}"
-  done
-fi
+
+mv -f "${TMPF}" "${TARGET}"
+echo "[OK] Clash 订阅已写入：${TARGET}"
 
 # ===========================
 # 11) 配置 nginx 提供订阅
@@ -964,16 +892,6 @@ systemctl restart nginx
 
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
-if [ -n "${HY2_PORTS:-}" ]; then
-  IFS=',' read -r -a print_ports <<<"$PORT_LIST_CSV"
-  echo "    其他端口订阅："
-  for pt in "${print_ports[@]}"; do
-    [ "$pt" = "$HY2_PORT" ] && continue
-    if [ -f "${CLASH_WEB_DIR}/clash_${pt}.yaml" ]; then
-      echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_${pt}.yaml"
-    fi
-  done
-fi
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
 # （此处函数已前移至 helper 区域，避免在调用前未定义）
