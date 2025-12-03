@@ -6,7 +6,7 @@ set -euo pipefail
 #  0) 选择模式（全新安装 / 仅维护任务）
 #  1) 获取公网 IPv4
 #  2) 安装依赖（如缺失）
-#  3) 生成域名（sslip.io -> nip.io -> xip.io）
+#  3) 域名处理（支持自定义域名；已移除动态域名服务）
 #  4) 安装 hysteria 二进制（若不存在）
 #  5) 生成主/多端口密码与端口列表（如未提供）
 #  6) 检查 /acme 现有证书；否则准备 ACME（并确保 80/tcp 可用）
@@ -440,6 +440,13 @@ try_issue_cert_preflight() {
   local domain="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
   local acme_bin=""
 
+  # 若未设置域名，则无法进行 ACME 预申请
+  if [ -z "$domain" ]; then
+    echo "[ERROR] 未设置 HY2_DOMAIN，且已移除动态域名服务；无法进行 ACME 预申请。"
+    echo "       请设置 HY2_DOMAIN 或直接使用 DISABLE_SELF_SIGNED=0 启用自签 + 指纹模式。"
+    return 1
+  fi
+
   # 查找 acme.sh
   if command -v acme.sh >/dev/null 2>&1; then
     acme_bin="$(command -v acme.sh)"
@@ -511,54 +518,12 @@ try_issue_cert_preflight() {
   fi
   local acme_output
   if ! acme_output=$("$acme_bin" "${issue_args[@]}" 2>&1); then
-    # 检测速率限制并尝试切换动态域名服务（sslip.io -> nip.io -> xip.io）
     if echo "$acme_output" | grep -E -iq "(rateLimited|too many certificates\s*\(5\)\s*already issued for this exact set of identifiers)"; then
-      echo "[WARN] 预申请命中速率限制，尝试切换动态域名服务..."
-      # 识别当前服务
-      local current_service=""
-      if echo "$domain" | grep -q "sslip.io"; then current_service="sslip.io"; fi
-      if echo "$domain" | grep -q "nip.io"; then current_service="nip.io"; fi
-      if echo "$domain" | grep -q "xip.io"; then current_service="xip.io"; fi
-
-      # 生成候选域名（跳过当前服务）
-      local ip_dash="${SELECTED_IP//./-}"; local ip_dot="$SELECTED_IP"
-      local switched=0
-      for svc in sslip.io nip.io xip.io; do
-        [ "$svc" = "$current_service" ] && continue
-        local new_domain
-        if [ "$svc" = "xip.io" ]; then
-          new_domain="${ip_dot}.${svc}"
-        else
-          new_domain="${ip_dash}.${svc}"
-        fi
-        echo "[*] 尝试使用备用域名：${new_domain}"
-        local issue_args2=(--issue --standalone -d "$new_domain" --force)
-        if [ "${ACME_STAGING:-0}" -eq 1 ]; then issue_args2+=(--staging); fi
-        local out2
-        if out2=$("$acme_bin" "${issue_args2[@]}" 2>&1); then
-          HY2_DOMAIN="$new_domain"
-          SWITCHED_DOMAIN="$new_domain"
-          echo "[OK] 备用域名预申请成功：$new_domain"
-          acme_output="$out2"
-          switched=1
-          break
-        else
-          # 如果再次命中速率限制则继续尝试下一个服务
-          if echo "$out2" | grep -E -iq "(rateLimited|too many certificates\s*\(5\)\s*already issued for this exact set of identifiers)"; then
-            echo "[WARN] 备用域名仍命中速率限制，尝试下一个服务..."
-            continue
-          fi
-          echo "[WARN] 备用域名预申请失败：$svc"
-        fi
-      done
-      if [ "$switched" -ne 1 ]; then
-        echo "[WARN] 所有备用动态域名服务预申请均失败或受限"
-        return 1
-      fi
+      echo "[WARN] 预申请命中速率限制。已移除动态域名切换；建议设置 ACME_SERVER=zerossl 或 buypass，或稍后重试，或使用 DISABLE_SELF_SIGNED=0 启用自签 + 指纹。"
     else
       echo "[WARN] acme.sh 预申请失败"
-      return 1
     fi
+    return 1
   fi
 
   # 安装/链接证书到共享目录
@@ -1066,72 +1031,36 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # ===========================
-# 2) 生成域名（sslip.io -> nip.io -> xip.io -> warn）
+# 2) 域名处理（可选）
 # ===========================
-IP_DASH="${SELECTED_IP//./-}"
-IP_DOT="${SELECTED_IP}"
-
-# 定义域名服务列表，按优先级排序
-DOMAIN_SERVICES=("sslip.io" "nip.io" "xip.io")
-HY2_DOMAIN=""
-
-echo "[*] 检测可用的域名解析服务..."
-
-# 遍历域名服务，找到第一个可用的
-for service in "${DOMAIN_SERVICES[@]}"; do
-  if [ "$service" = "xip.io" ]; then
-    # xip.io 使用点分格式
-    test_domain="${IP_DOT}.${service}"
-  else
-    # sslip.io 和 nip.io 使用横线格式
-    test_domain="${IP_DASH}.${service}"
-  fi
-  
-  echo "[*] 测试 ${service}: ${test_domain}"
-  
-  # 多重检查域名解析可用性
-  resolved_ip=""
-  
-  # 方法1: 使用 getent
-  resolved_ip="$(getent ahostsv4 "$test_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-  
-  # 方法2: 如果 getent 失败，尝试 nslookup
-  if [ -z "$resolved_ip" ] && command -v nslookup >/dev/null 2>&1; then
-    resolved_ip="$(nslookup "$test_domain" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1 || true)"
-  fi
-  
-  # 方法3: 如果还是失败，尝试 dig
-  if [ -z "$resolved_ip" ] && command -v dig >/dev/null 2>&1; then
-    resolved_ip="$(dig +short "$test_domain" A 2>/dev/null | head -n1 || true)"
-  fi
-  
-  # 验证解析结果
-  if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
-    HY2_DOMAIN="$test_domain"
-    echo "[OK] ${service} 解析正常: ${test_domain} -> ${resolved_ip}"
-    
-    # 额外验证：尝试 HTTP 连接测试（可选）
-    if command -v curl >/dev/null 2>&1; then
-      if curl -s --connect-timeout 3 "http://${test_domain}:80" >/dev/null 2>&1 || [ $? -eq 7 ]; then
-        echo "[OK] ${service} HTTP 连接测试通过"
-      else
-        echo "[INFO] ${service} HTTP 连接测试失败，但域名解析正常"
-      fi
-    fi
-    break
-  else
-    echo "[WARN] ${service} 解析失败或不匹配: ${test_domain} -> ${resolved_ip:-"无解析"}"
-  fi
-done
-
-# 如果所有服务都不可用，发出警告但继续使用 sslip.io
-if [ -z "$HY2_DOMAIN" ]; then
-  HY2_DOMAIN="${IP_DASH}.sslip.io"
-  echo "[WARN] 所有域名解析服务（sslip.io/nip.io/xip.io）都无法正确解析到 ${SELECTED_IP}。"
-  echo "       将使用 ${HY2_DOMAIN}，但 ACME HTTP-01 可能失败。"
-  echo "       请确保域名解析到本机且 80/tcp 可达。"
+# 当显式设置 DISABLE_SELF_SIGNED=0 时，默认启用自签 + 指纹固定模式
+if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ]; then
+  IP_PIN_MODE=1
+  echo "[INFO] 启用自签 + 指纹固定模式：不使用域名/SNI，不依赖 80/443"
 fi
-echo "[OK] 使用域名/IP：${HY2_DOMAIN} -> ${SELECTED_IP}"
+
+if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+  HY2_DOMAIN=""
+  echo "[INFO] IP+指纹模式启用：不使用域名/SNI"
+else
+  if [ -n "${HY2_DOMAIN:-}" ]; then
+    echo "[OK] 使用自定义域名：${HY2_DOMAIN}"
+    # 可选校验解析是否指向本机 IP（不强制）
+    resolved_ip="$(getent ahostsv4 "$HY2_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+    if [ -z "$resolved_ip" ] && command -v nslookup >/dev/null 2>&1; then
+      resolved_ip="$(nslookup "$HY2_DOMAIN" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1 || true)"
+    fi
+    if [ -z "$resolved_ip" ] && command -v dig >/dev/null 2>&1; then
+      resolved_ip="$(dig +short "$HY2_DOMAIN" A 2>/dev/null | head -n1 || true)"
+    fi
+    if [ -n "$resolved_ip" ] && [ "$resolved_ip" != "$SELECTED_IP" ]; then
+      echo "[WARN] 域名解析到 ${resolved_ip}，与本机 ${SELECTED_IP} 不一致；ACME 可能失败"
+    fi
+  else
+    echo "[ERROR] 未设置 HY2_DOMAIN，且已移除动态域名服务。"
+    echo "       如需使用 ACME，请设置 HY2_DOMAIN 指向本机；或直接使用 DISABLE_SELF_SIGNED=0 启用自签 + 指纹模式。"
+  fi
+fi
 
 # ===========================
 # 3) 安装 hysteria 二进制（若不存在）
@@ -1257,6 +1186,16 @@ if [ -d "$ACME_BASE" ]; then
   done < <(find "$ACME_BASE" -type d -print0)
 fi
 
+# 如启用 IP+指纹模式，则跳过 ACME/导入并强制生成自签证书
+if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+  echo "[INFO] 已启用 IP+指纹模式：跳过 ACME 与现有证书，使用自签证书"
+  USE_EXISTING_CERT=0
+  USE_CERT_PATH=""
+  USE_KEY_PATH=""
+  generate_self_signed_cert
+  SELF_SIGNED_USED=1
+fi
+
 if [ "$USE_EXISTING_CERT" -eq 0 ]; then
   echo "[INFO] /acme 下未找到证书，先尝试预申请（standalone/http-01）..."
   # 提前检查/释放 80/tcp，预申请将占用该端口
@@ -1374,7 +1313,7 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
     # 检查 HTTP 429 速率限制错误
     if journalctl -u hysteria-server --no-pager -n 200 | grep -E -iq "(429|rate.?limit|too.?many.?requests|rateLimited)"; then
       RATE_LIMITED=1
-      echo "[WARN] 检测到 HTTP 429 速率限制错误，尝试切换域名..."
+  echo "[WARN] 检测到 HTTP 429 速率限制错误。"
       break
     fi
     
@@ -1382,162 +1321,10 @@ if [ "$USE_EXISTING_CERT" -eq 0 ]; then
     TRIES=$((TRIES+1))
   done
 
-  # 处理速率限制：尝试切换到下一个可用域名
+  # 处理速率限制：不再切换动态域名，给出建议
   if [ "$RATE_LIMITED" -eq 1 ]; then
-    echo "[*] 由于 HTTP 429 错误，尝试切换到备用域名服务..."
-    
-    # 获取当前使用的域名服务
-    CURRENT_SERVICE=""
-    if echo "$HY2_DOMAIN" | grep -q "sslip.io"; then
-      CURRENT_SERVICE="sslip.io"
-    elif echo "$HY2_DOMAIN" | grep -q "nip.io"; then
-      CURRENT_SERVICE="nip.io"
-    elif echo "$HY2_DOMAIN" | grep -q "xip.io"; then
-      CURRENT_SERVICE="xip.io"
-    fi
-    
-    # 尝试切换到下一个域名服务
-    SWITCHED=0
-    for service in "${DOMAIN_SERVICES[@]}"; do
-      # 跳过当前已使用的服务
-      if [ "$service" = "$CURRENT_SERVICE" ]; then
-        continue
-      fi
-      
-      # 生成新的测试域名
-      if [ "$service" = "xip.io" ]; then
-        new_domain="${IP_DOT}.${service}"
-      else
-        new_domain="${IP_DASH}.${service}"
-      fi
-      
-      echo "[*] 尝试切换到 ${service}: ${new_domain}"
-      
-      # 快速验证新域名
-      resolved_ip="$(getent ahostsv4 "$new_domain" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-      if [ -n "$resolved_ip" ] && [ "$resolved_ip" = "$SELECTED_IP" ]; then
-        echo "[OK] ${service} 解析验证成功，切换域名..."
-        HY2_DOMAIN="$new_domain"
-        SWITCHED=1
-        
-        # 停止当前服务
-        systemctl stop hysteria-server 2>/dev/null || true
-        
-        # 重新生成配置文件（根据是否存在现有证书写 TLS/ACME）
-        if [ "$USE_EXISTING_CERT" -eq 1 ]; then
-          write_hysteria_main_config 1
-          SWITCH_USED_ACME=0
-        else
-          write_hysteria_main_config 0
-          SWITCH_USED_ACME=1
-        fi
-        
-        # 重启服务
-         if [ "${SWITCH_USED_ACME:-0}" -eq 1 ]; then
-           ensure_port_80_available
-         fi
-         systemctl start hysteria-server
-         echo "[OK] 已切换到 ${service}，重新启动证书申请..."
-         
-         # 更新 Clash 配置文件中的域名
-         echo "[*] 更新 Clash 订阅配置中的域名..."
-         if [ -f "${CLASH_OUT_PATH}" ]; then
-           # 重新生成 Clash 配置
-           TMPF="${CLASH_OUT_PATH}.tmp"
-           TARGET="${CLASH_OUT_PATH}"
-           
-           # 重新转义新域名
-           DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
-           
-           # 从模板重新生成（需要先创建临时模板）
-           cat >"${TMPF}" <<EOF
-mixed-port: 7890
-allow-lan: true
-bind-address: '*'
-mode: rule
-log-level: info
-external-controller: '127.0.0.1:9090'
-
-dns:
-  enable: true
-  ipv6: false
-  default-nameserver:
-    - 223.5.5.5
-    - 8.8.8.8
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  nameserver:
-    - https://doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
-
-proxies:
-  - name: "__NAME_TAG__"
-    type: hysteria2
-    server: __SELECTED_IP__
-    port: __HY2_PORT__
-    password: __HY2_PASS__
-    obfs: salamander
-    obfs-password: __OBFS_PASS__
-    sni: __HY2_DOMAIN__
-
-proxy-groups:
-  - name: "🚀 节点选择"
-    type: select
-    proxies:
-      - "__NAME_TAG__"
-      - DIRECT
-
-rules:
-  - DOMAIN-SUFFIX,cn,DIRECT
-  - DOMAIN-KEYWORD,baidu,DIRECT
-  - DOMAIN-KEYWORD,taobao,DIRECT
-  - DOMAIN-KEYWORD,qq,DIRECT
-  - DOMAIN-KEYWORD,weixin,DIRECT
-  - DOMAIN-KEYWORD,alipay,DIRECT
-  - GEOIP,CN,DIRECT
-  - MATCH,🚀 节点选择
-EOF
-           
-           # 执行变量替换
-           NAME_ESC="$(escape_for_sed "${NAME_TAG}")"
-           IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
-           PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
-           PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
-           OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
-           
-           sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
-               -e "s@__SELECTED_IP__@${IP_ESC}@g" \
-               -e "s@__HY2_PORT__@${PORT_ESC}@g" \
-               -e "s@__HY2_PASS__@${PASS_ESC}@g" \
-               -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
-               -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
-               "${TMPF}" > "${TARGET}"
-           rm -f "${TMPF}"
-           
-           echo "[OK] Clash 订阅配置已更新为新域名: ${HY2_DOMAIN}"
-         fi
-         
-         # 重新等待证书申请
-         TRIES=0
-         ACME_OK=0
-         while [ $TRIES -lt 12 ]; do
-           if journalctl -u hysteria-server --no-pager -n 100 | grep -E -iq "(certificate obtained successfully|acme_client.*authorization finalized|acme.*valid)"; then
-             ACME_OK=1
-             echo "[OK] 域名切换后证书申请成功"
-             break
-           fi
-           sleep 5
-           TRIES=$((TRIES+1))
-         done
-         break
-      else
-        echo "[WARN] ${service} 解析验证失败，尝试下一个服务"
-      fi
-    done
-    
-    if [ "$SWITCHED" -eq 0 ]; then
-      echo "[ERROR] 无法找到可用的备用域名服务"
-    fi
+    echo "[WARN] 检测到 ACME 速率限制（429）。已移除动态域名切换逻辑。"
+    echo "       建议：设置 ACME_SERVER=zerossl 或 buypass，或稍后重试；如无需公信任，使用 DISABLE_SELF_SIGNED=0 启用自签 + 指纹。"
   fi
 
   if [ "$ACME_OK" -ne 1 ] && [ "$RATE_LIMITED" -eq 0 ]; then
@@ -1608,9 +1395,17 @@ PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], 
 
 INSECURE_VAL=0
 if [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-  INSECURE_VAL=1
+  if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+    INSECURE_VAL=0
+  else
+    INSECURE_VAL=1
+  fi
 fi
-URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+  URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+else
+  URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+fi
 
 echo
 echo "=========== HY2 节点（URI） ==========="
@@ -1625,7 +1420,11 @@ if [ -n "${HY2_PORTS:-}" ]; then
     P_PASS="${PASS_MAP[$pt]}"; P_OBFS="${OBFS_MAP[$pt]}"
     P_PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_PASS")"
     P_OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_OBFS")"
-    P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+      P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    else
+      P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&sni=${HY2_DOMAIN}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    fi
     echo "$pt -> $P_URI"
   done
   echo "======================================="
@@ -1665,7 +1464,7 @@ proxies:
     password: __HY2_PASS__
     obfs: salamander
     obfs-password: __OBFS_PASS__
-    sni: __HY2_DOMAIN__
+    __SNI_LINE__
 
 proxy-groups:
   - name: "🚀 节点选择"
@@ -1694,14 +1493,19 @@ IP_ESC="$(escape_for_sed "${SELECTED_IP}")"
 PORT_ESC="$(escape_for_sed "${HY2_PORT}")"
 PASS_ESC="$(escape_for_sed "${HY2_PASS}")"
 OBFS_ESC="$(escape_for_sed "${OBFS_PASS}")"
-DOMAIN_ESC="$(escape_for_sed "${HY2_DOMAIN}")"
+if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+  SNI_LINE=""
+else
+  SNI_LINE="sni: ${HY2_DOMAIN}"
+fi
+SNI_ESC="$(escape_for_sed "${SNI_LINE}")"
 
 sed -e "s@__NAME_TAG__@${NAME_ESC}@g" \
     -e "s@__SELECTED_IP__@${IP_ESC}@g" \
     -e "s@__HY2_PORT__@${PORT_ESC}@g" \
     -e "s@__HY2_PASS__@${PASS_ESC}@g" \
     -e "s@__OBFS_PASS__@${OBFS_ESC}@g" \
-    -e "s@__HY2_DOMAIN__@${DOMAIN_ESC}@g" \
+    -e "s@__SNI_LINE__@${SNI_ESC}@g" \
     "${TMPF}" > "${TARGET}"
 rm -f "${TMPF}"
 
@@ -1742,7 +1546,7 @@ proxies:
     password: __HY2_PASS__
     obfs: salamander
     obfs-password: __OBFS_PASS__
-    sni: __HY2_DOMAIN__
+    __SNI_LINE__
 
 proxy-groups:
   - name: "🚀 节点选择"
@@ -1766,13 +1570,18 @@ EOF
     PORT_ESC2="$(escape_for_sed "${pt}")"
     PASS_ESC2="$(escape_for_sed "${PASS_MAP[$pt]}")"
     OBFS_ESC2="$(escape_for_sed "${OBFS_MAP[$pt]}")"
-    DOMAIN_ESC2="$(escape_for_sed "${HY2_DOMAIN}")"
+    if [ "${IP_PIN_MODE:-0}" -eq 1 ]; then
+      SNI_LINE2=""
+    else
+      SNI_LINE2="sni: ${HY2_DOMAIN}"
+    fi
+    SNI_ESC2="$(escape_for_sed "${SNI_LINE2}")"
     sed -e "s@__NAME_TAG__@${NAME_ESC2}@g" \
         -e "s@__SELECTED_IP__@${IP_ESC2}@g" \
         -e "s@__HY2_PORT__@${PORT_ESC2}@g" \
         -e "s@__HY2_PASS__@${PASS_ESC2}@g" \
         -e "s@__OBFS_PASS__@${OBFS_ESC2}@g" \
-        -e "s@__HY2_DOMAIN__@${DOMAIN_ESC2}@g" \
+        -e "s@__SNI_LINE__@${SNI_ESC2}@g" \
         "${local_tmp}" > "${local_target}"
     rm -f "${local_tmp}"
     echo "[OK] Clash 订阅已写入：${local_target}"
@@ -1826,6 +1635,12 @@ echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game
 generate_self_signed_cert() {
   local dom="${SWITCHED_DOMAIN:-$HY2_DOMAIN}"
   local ip="$SELECTED_IP"
+  local cn
+  if [ -n "$dom" ]; then
+    cn="$dom"
+  else
+    cn="$ip"
+  fi
   mkdir -p /acme/shared
   if ! command -v openssl >/dev/null 2>&1; then
     echo "[*] 未检测到 openssl，尝试自动安装..."
@@ -1843,21 +1658,26 @@ generate_self_signed_cert() {
   if command -v openssl >/dev/null 2>&1; then
     echo "[*] 生成自签证书用于临时启动..."
     # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
+    local san_ext
+    if [ -n "$dom" ]; then
+      san_ext="subjectAltName=DNS:${dom},IP:${ip}"
+    else
+      san_ext="subjectAltName=IP:${ip}"
+    fi
     if openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
-      -days 365 -subj "/CN=${dom}" -addext "subjectAltName=DNS:${dom},IP:${ip}" >/dev/null 2>&1; then
+      -days 365 -subj "/CN=${cn}" -addext "${san_ext}" >/dev/null 2>&1; then
       :
     else
       openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
-        -days 365 -subj "/CN=${dom}" >/dev/null 2>&1 || true
+        -days 365 -subj "/CN=${cn}" >/dev/null 2>&1 || true
     fi
     # 计算 SPKI pin（供客户端使用 pinSHA256，避免 insecure）
-    if command -v sha256sum >/dev/null 2>&1; then
-      PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
-        openssl pkey -pubin -outform DER 2>/dev/null | \
-        openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
-    fi
+    PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
+      openssl pkey -pubin -outform DER 2>/dev/null | \
+      openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
+    PIN_SHA256="${PIN_SHA256:-}"
     USE_EXISTING_CERT=1
     USE_CERT_PATH="/acme/shared/fullchain.pem"
     USE_KEY_PATH="/acme/shared/privkey.pem"
