@@ -842,7 +842,34 @@ EOF
 for pt in "${ports_all[@]}"; do
   echo "      - \"${pt}\"" >>"${TMPF}"
 done
+echo "      - \"⚡ 自动选择\"" >>"${TMPF}"
+echo "      - \"🛡 故障切换\"" >>"${TMPF}"
 echo "      - DIRECT" >>"${TMPF}"
+
+# 自动测速与故障切换分组
+cat >>"${TMPF}" <<'EOF'
+  - name: "⚡ 自动选择"
+    type: url-test
+    proxies:
+EOF
+for pt in "${ports_all[@]}"; do
+  echo "      - \"${pt}\"" >>"${TMPF}"
+done
+cat >>"${TMPF}" <<'EOF'
+    url: http://www.gstatic.com/generate_204
+    interval: 180
+    tolerance: 50
+    lazy: true
+  - name: "🛡 故障切换"
+    type: fallback
+    proxies:
+EOF
+for pt in "${ports_all[@]}"; do
+  echo "      - \"${pt}\"" >>"${TMPF}"
+done
+cat >>"${TMPF}" <<'EOF'
+    url: http://www.gstatic.com/generate_204
+    interval: 180
 
 # 规则
 cat >>"${TMPF}" <<'EOF'
