@@ -17,17 +17,64 @@ set -euo pipefail
 # =============================================================
 
 # ===== 可改参数 =====
-HY2_PORT="${HY2_PORT:-8443}"          # Hysteria2 UDP端口
+HY2_PORT="${HY2_PORT:-443}"           # Hysteria2 UDP端口（默认 443，更易穿透）
 HY2_PORTS="${HY2_PORTS:-}"            # 多端口（逗号分隔，例如 8443,8444,8445）
 HY2_PORT_COUNT="${HY2_PORT_COUNT:-}"  # 端口数量（若未提供 HY2_PORTS，则按数量从主端口递增）
 HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
 OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
+DISABLE_OBFS="${DISABLE_OBFS:-1}"     # 关闭混淆（1=关闭，其余=开启）
 NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
 PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
 
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
+CLASH_LOG_LEVEL="${CLASH_LOG_LEVEL:-info}"
+ENABLE_URLTEST="${ENABLE_URLTEST:-1}"
+CLASH_URLTEST_URL="${CLASH_URLTEST_URL:-https://www.gstatic.com/generate_204}"
+CLASH_URLTEST_INTERVAL="${CLASH_URLTEST_INTERVAL:-300}"
+CLASH_URLTEST_TOLERANCE="${CLASH_URLTEST_TOLERANCE:-50}"
+ENABLE_FALLBACK="${ENABLE_FALLBACK:-1}"
+
 HTTP_PORT="${HTTP_PORT:-8080}"
+
+# 极限抗丢包默认开启（可通过环境变量关闭/调参）
+DISABLE_GRO_GSO="${DISABLE_GRO_GSO:-1}"      # 关闭聚合/分段（1=关闭），降低尾延迟与乱序
+ENABLE_TC_QDISC="${ENABLE_TC_QDISC:-2}"      # 开启 tc 队列（1=fq_codel，2=cake）
+TC_MAX_RATE="${TC_MAX_RATE:-}"               # 可选：限速，配合 fq_codel/cake（如 1000mbit）
+NOTRACK_UDP="${NOTRACK_UDP:-1}"              # 跳过 UDP conntrack（1=启用），降低高并发丢包
+CONNTRACK_MAX="${CONNTRACK_MAX:-1048576}"    # 可选：提高 conntrack 表大小（如 1048576）
+
+# 进一步优化：可选 DSCP 标记与队列参数、网卡环形缓冲
+ENABLE_DSCP="${ENABLE_DSCP:-0}"              # 为 UDP 流量标记 DSCP（仅本机出站有效）
+DSCP_OUT_CLASS="${DSCP_OUT_CLASS:-EF}"       # 出站标记的 DSCP 类（如 EF/CS7/AF31，也可数值）
+DSCP_IN_CLASS="${DSCP_IN_CLASS:-}"           # 可选：对入站包标记 DSCP（通常仅用于本机转发队列分类）
+TC_CAKE_DIFFSERV="${TC_CAKE_DIFFSERV:-diffserv3}"  # cake diffserv 模式（diffserv3/diffserv4/diffserv8）
+TC_CAKE_OPTS="${TC_CAKE_OPTS:-}"             # 额外 cake 参数（例如 nat）
+TC_FQ_CODEL_OPTS="${TC_FQ_CODEL_OPTS:-}"     # 额外 fq_codel 参数（例如 flows 1024）
+SET_NIC_RING="${SET_NIC_RING:-0}"            # 调整网卡环形缓冲（1=启用）
+RX_RING="${RX_RING:-4096}"                   # RX 环形缓冲目标值
+TX_RING="${TX_RING:-4096}"                   # TX 环形缓冲目标值
+
+# 运行时网络调优参数（可覆盖默认值）
+NET_RMEM_MAX="${NET_RMEM_MAX:-33554432}"
+NET_WMEM_MAX="${NET_WMEM_MAX:-33554432}"
+NET_RMEM_DEF="${NET_RMEM_DEF:-262144}"
+NET_WMEM_DEF="${NET_WMEM_DEF:-262144}"
+NET_BACKLOG="${NET_BACKLOG:-250000}"
+UDP_RMEM_MIN="${UDP_RMEM_MIN:-16384}"
+UDP_WMEM_MIN="${UDP_WMEM_MIN:-16384}"
+DEFAULT_QDISC="${DEFAULT_QDISC:-fq}"
+
+# 低延迟相关：Busy Poll 与网卡中断合并（可选）
+ENABLE_BUSY_POLL="${ENABLE_BUSY_POLL:-1}"     # 启用忙轮询/预算调优（提升低延迟，增 CPU）
+NET_BUSY_POLL="${NET_BUSY_POLL:-50}"          # 微秒
+NET_BUSY_READ="${NET_BUSY_READ:-50}"          # 微秒
+NETDEV_BUDGET_USECS="${NETDEV_BUDGET_USECS:-80}" # NAPI 每轮最大耗时微秒
+NETDEV_BUDGET="${NETDEV_BUDGET:-300}"         # NAPI 一轮最大包数预算
+DEV_WEIGHT="${DEV_WEIGHT:-64}"                 # 设备权重（每轮处理包数的基线）
+SET_NIC_COALESCE="${SET_NIC_COALESCE:-0}"      # 启用网卡中断合并（1=启用）
+RX_COALESCE_USECS="${RX_COALESCE_USECS:-16}"   # RX 中断合并微秒
+TX_COALESCE_USECS="${TX_COALESCE_USECS:-16}"   # TX 中断合并微秒
 
 # ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
 escape_for_sed() {
@@ -126,12 +173,16 @@ protocol: udp
 auth:
   type: password
   password: ${pass}
-
+EOF
+  if [ "${DISABLE_OBFS}" != "1" ]; then
+    cat >>"/etc/hysteria/config-${port}.yaml" <<EOF
 obfs:
   type: salamander
   salamander:
     password: ${obfsp}
-
+EOF
+  fi
+  cat >>"/etc/hysteria/config-${port}.yaml" <<EOF
 tls:
   cert: ${USE_CERT_PATH}
   key: ${USE_KEY_PATH}
@@ -149,12 +200,16 @@ protocol: udp
 auth:
   type: password
   password: ${HY2_PASS}
-
+EOF
+  if [ "${DISABLE_OBFS}" != "1" ]; then
+    cat >>/etc/hysteria/config.yaml <<EOF
 obfs:
   type: salamander
   salamander:
     password: ${OBFS_PASS}
-
+EOF
+  fi
+  cat >>/etc/hysteria/config.yaml <<EOF
 tls:
   cert: ${USE_CERT_PATH}
   key: ${USE_KEY_PATH}
@@ -187,7 +242,9 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config-%i.yaml
 Restart=on-failure
-RestartSec=3
+RestartSec=1
+LimitNOFILE=1048576
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -229,6 +286,20 @@ ensure_udp_ports_open() {
       ufw status 2>/dev/null | grep -q "${pt}/udp" || ufw allow "${pt}/udp" >/dev/null 2>&1 || true
     done
     echo "[OK] ufw 已放行指定 UDP 端口"
+    opened=1
+  elif command -v iptables >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      iptables -C INPUT -p udp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p udp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || true
+    done
+    echo "[OK] iptables 已放行指定 UDP 端口"
+    opened=1
+  elif command -v nft >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      nft add rule inet filter input udp dport "$pt" accept >/dev/null 2>&1 || true
+    done
+    echo "[OK] nftables 已尝试放行指定 UDP 端口"
     opened=1
   fi
   if [ "$opened" -eq 0 ]; then
@@ -301,6 +372,20 @@ ensure_tcp_port_open() {
     done
     echo "[OK] ufw 已放行指定 TCP 端口"
     opened=1
+  elif command -v iptables >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      iptables -C INPUT -p tcp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p tcp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || true
+    done
+    echo "[OK] iptables 已放行指定 TCP 端口"
+    opened=1
+  elif command -v nft >/dev/null 2>&1; then
+    IFS=',' read -r -a ports <<<"$list_csv"
+    for pt in "${ports[@]}"; do
+      nft add rule inet filter input tcp dport "$pt" accept >/dev/null 2>&1 || true
+    done
+    echo "[OK] nftables 已尝试放行指定 TCP 端口"
+    opened=1
   fi
   if [ "$opened" -eq 0 ]; then
     echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 TCP 端口。"
@@ -341,6 +426,200 @@ try_import_from_traefik_acme_json() { return 1; }
 # ---- helper: 使用 ACME 缓存目录启动额外端口（已移除） ----
 start_additional_instances_with_acme_cache() { return 0; }
 
+# ---- helper: 运行时网络调优（仅当前会话，非持久化） ----
+apply_runtime_net_tuning() {
+  if [ "${ENABLE_NET_TUNE:-1}" != "1" ]; then
+    echo "[INFO] 网络调优已禁用（ENABLE_NET_TUNE=0）"
+    return 0
+  fi
+  # 提升 UDP 缓冲与排队，启用低抖动队列
+  sysctl -w net.core.rmem_max="${NET_RMEM_MAX}" >/dev/null 2>&1 || true
+  sysctl -w net.core.wmem_max="${NET_WMEM_MAX}" >/dev/null 2>&1 || true
+  sysctl -w net.core.rmem_default="${NET_RMEM_DEF}" >/dev/null 2>&1 || true
+  sysctl -w net.core.wmem_default="${NET_WMEM_DEF}" >/dev/null 2>&1 || true
+  sysctl -w net.core.netdev_max_backlog="${NET_BACKLOG}" >/dev/null 2>&1 || true
+  sysctl -w net.core.default_qdisc="${DEFAULT_QDISC}" >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.udp_rmem_min="${UDP_RMEM_MIN}" >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.udp_wmem_min="${UDP_WMEM_MIN}" >/dev/null 2>&1 || true
+
+  # 低延迟：忙轮询与 NAPI 预算（风险：增 CPU 占用）
+  if [ "${ENABLE_BUSY_POLL}" = "1" ]; then
+    sysctl -w net.core.busy_poll="${NET_BUSY_POLL}" >/dev/null 2>&1 || true
+    sysctl -w net.core.busy_read="${NET_BUSY_READ}" >/dev/null 2>&1 || true
+    sysctl -w net.core.netdev_budget_usecs="${NETDEV_BUDGET_USECS}" >/dev/null 2>&1 || true
+    sysctl -w net.core.netdev_budget="${NETDEV_BUDGET}" >/dev/null 2>&1 || true
+    sysctl -w net.core.dev_weight="${DEV_WEIGHT}" >/dev/null 2>&1 || true
+    echo "[OK] 已启用 Busy Poll/预算调优：busy_poll=${NET_BUSY_POLL}us busy_read=${NET_BUSY_READ}us budget_usecs=${NETDEV_BUDGET_USECS} budget=${NETDEV_BUDGET} dev_weight=${DEV_WEIGHT}"
+  else
+    echo "[INFO] Busy Poll 已禁用（ENABLE_BUSY_POLL=0）"
+  fi
+  echo "[OK] 已应用运行时网络调优参数"
+}
+
+# ---- helper: 检测默认出口网卡 ----
+detect_main_iface() {
+  local iface=""
+  if command -v ip >/dev/null 2>&1; then
+    iface="$(ip route get 1 2>/dev/null | awk '/dev/ {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+  fi
+  echo "${iface}"
+}
+
+# ---- helper: DSCP 名称到数值的简易映射（常见类）。返回空表示未知。----
+dscp_to_value() {
+  local cls="$1"
+  case "$cls" in
+    EF|ef) echo 46 ;;
+    CS0|cs0) echo 0 ;;
+    CS1|cs1) echo 8 ;;
+    CS2|cs2) echo 16 ;;
+    CS3|cs3) echo 24 ;;
+    CS4|cs4) echo 32 ;;
+    CS5|cs5) echo 40 ;;
+    CS6|cs6) echo 48 ;;
+    CS7|cs7) echo 56 ;;
+    AF11|af11) echo 10 ;;
+    AF12|af12) echo 12 ;;
+    AF13|af13) echo 14 ;;
+    AF21|af21) echo 18 ;;
+    AF22|af22) echo 20 ;;
+    AF23|af23) echo 22 ;;
+    AF31|af31) echo 26 ;;
+    AF32|af32) echo 28 ;;
+    AF33|af33) echo 30 ;;
+    AF41|af41) echo 34 ;;
+    AF42|af42) echo 36 ;;
+    AF43|af43) echo 38 ;;
+    * )
+      # 如果是纯数字则直接返回
+      if printf '%s' "$cls" | grep -Eq '^[0-9]+$'; then
+        echo "$cls"
+      else
+        echo "" # 未知
+      fi
+      ;;
+  esac
+}
+
+# ---- helper: 极限抗丢包（可选，默认关闭） ----
+apply_extreme_loss_mitigation() {
+  local iface="$(detect_main_iface)"
+  [ -z "$iface" ] && echo "[WARN] 未能检测到主网卡，跳过极限抗丢包步骤" && return 0
+
+  # 1) 可选关闭 GRO/GSO（减少聚合与乱序导致的尾延迟/重传）
+  if [ "${DISABLE_GRO_GSO}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -K "$iface" gro off gso off >/dev/null 2>&1 || true
+    echo "[OK] 已关闭 $iface 的 GRO/GSO"
+  fi
+
+  # 2) 可选应用 tc 队列控制（抗 bufferbloat）
+  if [ "${ENABLE_TC_QDISC}" != "0" ] && command -v tc >/dev/null 2>&1; then
+    if [ "${ENABLE_TC_QDISC}" = "2" ]; then
+      # cake 更智能（若内核/模块支持），可选带宽参数
+      if tc qdisc replace dev "$iface" root cake ${TC_MAX_RATE:+bandwidth $TC_MAX_RATE} ${TC_CAKE_DIFFSERV:+$TC_CAKE_DIFFSERV} ${TC_CAKE_OPTS} >/dev/null 2>&1; then
+        echo "[OK] 已在 $iface 应用 cake qdisc${TC_MAX_RATE:+（带宽 $TC_MAX_RATE）}${TC_CAKE_DIFFSERV:+，$TC_CAKE_DIFFSERV}${TC_CAKE_OPTS:+，$TC_CAKE_OPTS}"
+      else
+        echo "[WARN] cake 不可用，尝试 fq_codel"
+        tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
+        echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
+      fi
+    else
+      tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
+      echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
+    fi
+  fi
+
+  # 3) 可选跳过 UDP conntrack（降低 nf_conntrack 开销与爆表导致的丢包）
+  if [ "${NOTRACK_UDP}" = "1" ]; then
+    local ports_csv="$PORT_LIST_CSV"
+    IFS=',' read -r -a ports <<<"$ports_csv"
+    if command -v iptables >/dev/null 2>&1; then
+      for pt in "${ports[@]}"; do
+        iptables -t raw -C PREROUTING -p udp --dport "$pt" -j NOTRACK >/dev/null 2>&1 || iptables -t raw -I PREROUTING -p udp --dport "$pt" -j NOTRACK >/dev/null 2>&1 || true
+        iptables -t raw -C OUTPUT -p udp --sport "$pt" -j NOTRACK >/dev/null 2>&1 || iptables -t raw -I OUTPUT -p udp --sport "$pt" -j NOTRACK >/dev/null 2>&1 || true
+      done
+      echo "[OK] iptables raw NOTRACK 已应用于 UDP 端口"
+    elif command -v nft >/dev/null 2>&1; then
+      for pt in "${ports[@]}"; do
+        nft add rule inet raw prerouting udp dport "$pt" notrack >/dev/null 2>&1 || true
+        nft add rule inet raw output udp sport "$pt" notrack >/dev/null 2>&1 || true
+      done
+      echo "[OK] nftables raw notrack 已应用于 UDP 端口"
+    else
+      echo "[WARN] 未找到 iptables/nft，无法应用 notrack"
+    fi
+  fi
+
+  # 4) 可选提高 conntrack 表上限（在未启用 notrack 时降低爆表掉包）
+  if [ -n "${CONNTRACK_MAX}" ]; then
+    sysctl -w net.netfilter.nf_conntrack_max="${CONNTRACK_MAX}" >/dev/null 2>&1 || true
+    echo "[OK] 已设置 nf_conntrack_max=${CONNTRACK_MAX}"
+  fi
+
+  # 5) 可选 DSCP 流量标记（用于 egress 队列分类与优先级）
+  if [ "${ENABLE_DSCP}" = "1" ]; then
+    local ports_csv="$PORT_LIST_CSV"
+    IFS=',' read -r -a ports <<<"$ports_csv"
+    if command -v iptables >/dev/null 2>&1; then
+      for pt in "${ports[@]}"; do
+        # 出站包：源端口为服务端端口
+        local _outv; _outv="$(dscp_to_value "$DSCP_OUT_CLASS")"
+        if [ -n "$_outv" ]; then
+          iptables -t mangle -C POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp "$_outv" >/dev/null 2>&1 || \
+          iptables -t mangle -A POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp "$_outv" >/dev/null 2>&1 || true
+        else
+          iptables -t mangle -C POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp-class "$DSCP_OUT_CLASS" >/dev/null 2>&1 || \
+          iptables -t mangle -A POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp-class "$DSCP_OUT_CLASS" >/dev/null 2>&1 || true
+        fi
+        # 入站包（可选）：目标端口为服务端端口
+        if [ -n "${DSCP_IN_CLASS}" ]; then
+          local _inv; _inv="$(dscp_to_value "$DSCP_IN_CLASS")"
+          if [ -n "$_inv" ]; then
+            iptables -t mangle -C PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp "$_inv" >/dev/null 2>&1 || \
+            iptables -t mangle -A PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp "$_inv" >/dev/null 2>&1 || true
+          else
+            iptables -t mangle -C PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp-class "$DSCP_IN_CLASS" >/dev/null 2>&1 || \
+            iptables -t mangle -A PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp-class "$DSCP_IN_CLASS" >/dev/null 2>&1 || true
+          fi
+        fi
+      done
+      echo "[OK] 已应用 DSCP 标记（iptables mangle）：出站 ${DSCP_OUT_CLASS}${DSCP_IN_CLASS:+，入站 $DSCP_IN_CLASS}"
+    elif command -v nft >/dev/null 2>&1; then
+      for pt in "${ports[@]}"; do
+        local _outv; _outv="$(dscp_to_value "$DSCP_OUT_CLASS")"
+        if [ -n "$_outv" ]; then
+          nft add rule inet mangle postrouting udp sport "$pt" dscp set "$_outv" >/dev/null 2>&1 || true
+        else
+          echo "[WARN] DSCP_OUT_CLASS=${DSCP_OUT_CLASS} 未识别，nft 需数值，已跳过设置"
+        fi
+        if [ -n "${DSCP_IN_CLASS}" ]; then
+          local _inv; _inv="$(dscp_to_value "$DSCP_IN_CLASS")"
+          if [ -n "$_inv" ]; then
+            nft add rule inet mangle prerouting udp dport "$pt" dscp set "$_inv" >/dev/null 2>&1 || true
+          else
+            echo "[WARN] DSCP_IN_CLASS=${DSCP_IN_CLASS} 未识别，nft 需数值，已跳过设置"
+          fi
+        fi
+      done
+      echo "[OK] 已应用 DSCP 标记（nftables mangle）：出站 ${DSCP_OUT_CLASS}${DSCP_IN_CLASS:+，入站 $DSCP_IN_CLASS}"
+    else
+      echo "[WARN] 未找到 iptables/nft，无法应用 DSCP 标记"
+    fi
+  fi
+
+  # 6) 可选调整网卡环形缓冲（提升在高并发下的吞吐与抗丢包）
+  if [ "${SET_NIC_RING}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -G "$iface" rx "$RX_RING" tx "$TX_RING" >/dev/null 2>&1 || true
+    echo "[OK] 已设置 $iface 环形缓冲：RX=$RX_RING TX=$TX_RING"
+  fi
+
+  # 7) 可选调整网卡中断合并（降低中断风暴，兼顾延迟）
+  if [ "${SET_NIC_COALESCE}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -C "$iface" rx-usecs "$RX_COALESCE_USECS" tx-usecs "$TX_COALESCE_USECS" >/dev/null 2>&1 || true
+    echo "[OK] 已设置 $iface 中断合并：rx-usecs=$RX_COALESCE_USECS tx-usecs=$TX_COALESCE_USECS"
+  fi
+}
+
 # ---- helper: 生成自签证书并导入到 /acme/shared ----
 generate_self_signed_cert() {
   local dom="${SWITCHED_DOMAIN:-${HY2_DOMAIN:-}}"
@@ -372,12 +651,12 @@ generate_self_signed_cert() {
     local cn_val
     cn_val="${dom:-$ip}"
     # 兼容性优先，尝试添加 SAN；若 -addext 不可用，退化为无 SAN
-    if openssl req -x509 -newkey rsa:2048 -nodes \
+    if openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 -nodes \
       -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
       -days 365 -subj "/CN=${cn_val}" -addext "$san_ext" >/dev/null 2>&1; then
       :
     else
-      openssl req -x509 -newkey rsa:2048 -nodes \
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 -nodes \
         -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
         -days 365 -subj "/CN=${cn_val}" >/dev/null 2>&1 || true
     fi
@@ -652,6 +931,8 @@ USE_EXISTING_CERT=1
 USE_CERT_PATH=""
 USE_KEY_PATH=""
 generate_self_signed_cert
+apply_runtime_net_tuning
+apply_extreme_loss_mitigation
 
 # ===========================
 # 6) 写 hysteria 配置（始终 TLS，自签证书）
@@ -675,7 +956,9 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
 Restart=on-failure
-RestartSec=3
+RestartSec=1
+LimitNOFILE=1048576
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -740,7 +1023,11 @@ NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1],
 PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$PIN_SHA256")"
 
 INSECURE_VAL=0
-URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp&obfs=salamander&obfs-password=${OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp"
+if [ "${DISABLE_OBFS}" != "1" ]; then
+  URI="${URI}&obfs=salamander&obfs-password=${OBFS_ENC}"
+fi
+URI="${URI}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
 
 echo
 echo "=========== HY2 节点（URI） ==========="
@@ -755,7 +1042,11 @@ if [ -n "${HY2_PORTS:-}" ]; then
     P_PASS="${PASS_MAP[$pt]}"; P_OBFS="${OBFS_MAP[$pt]}"
     P_PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_PASS")"
     P_OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_OBFS")"
-    P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp&obfs=salamander&obfs-password=${P_OBFS_ENC}&insecure=0&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp"
+    if [ "${DISABLE_OBFS}" != "1" ]; then
+      P_URI="${P_URI}&obfs=salamander&obfs-password=${P_OBFS_ENC}"
+    fi
+    P_URI="${P_URI}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
     echo "$pt -> $P_URI"
   done
   echo "======================================="
@@ -775,7 +1066,7 @@ port: 7890
 socks-port: 7891
 allow-lan: true
 mode: rule
-log-level: info
+log-level: ${CLASH_LOG_LEVEL}
 external-controller: 127.0.0.1:9090
 
 dns:
@@ -824,52 +1115,60 @@ for pt in "${ports_all[@]}"; do
     server: ${SELECTED_IP}
     port: ${pt}
     password: ${P_PASS}
+EOF
+  if [ "${DISABLE_OBFS}" != "1" ]; then
+    cat >>"${TMPF}" <<EOF
     obfs: salamander
     obfs-password: ${P_OBFS}
 EOF
+  fi
   [ -n "${SNI_LINE}" ] && echo "    ${SNI_LINE}" >>"${TMPF}"
   [ -n "${VERIFY_LINE}" ] && echo "    ${VERIFY_LINE}" >>"${TMPF}"
 done
 
 # 选择组包含所有端口名
-cat >>"${TMPF}" <<'EOF'
+echo >>"${TMPF}"
+echo "proxy-groups:" >>"${TMPF}"
+if [ "${ENABLE_URLTEST}" = "1" ]; then
+  cat >>"${TMPF}" <<EOF
+  - name: "自动选择"
+    type: url-test
+    url: ${CLASH_URLTEST_URL}
+    interval: ${CLASH_URLTEST_INTERVAL}
+    tolerance: ${CLASH_URLTEST_TOLERANCE}
+    proxies:
+EOF
+  for pt in "${ports_all[@]}"; do
+    echo "      - \"${pt}\"" >>"${TMPF}"
+  done
+fi
 
-proxy-groups:
+cat >>"${TMPF}" <<'EOF'
   - name: "🚀 节点选择"
     type: select
     proxies:
 EOF
+if [ "${ENABLE_URLTEST}" = "1" ]; then
+  echo "      - \"自动选择\"" >>"${TMPF}"
+fi
 for pt in "${ports_all[@]}"; do
   echo "      - \"${pt}\"" >>"${TMPF}"
 done
-echo "      - \"⚡ 自动选择\"" >>"${TMPF}"
-echo "      - \"🛡 故障切换\"" >>"${TMPF}"
 echo "      - DIRECT" >>"${TMPF}"
 
-# 自动测速与故障切换分组
-cat >>"${TMPF}" <<'EOF'
-  - name: "⚡ 自动选择"
-    type: url-test
-    proxies:
-EOF
-for pt in "${ports_all[@]}"; do
-  echo "      - \"${pt}\"" >>"${TMPF}"
-done
-cat >>"${TMPF}" <<'EOF'
-    url: http://www.gstatic.com/generate_204
-    interval: 180
-    tolerance: 50
-    lazy: true
-  - name: "🛡 故障切换"
+# 可选：故障转移组（fallback），与测速 URL/间隔一致
+if [ "${ENABLE_FALLBACK}" = "1" ]; then
+  cat >>"${TMPF}" <<EOF
+  - name: "故障转移"
     type: fallback
+    url: ${CLASH_URLTEST_URL}
+    interval: ${CLASH_URLTEST_INTERVAL}
     proxies:
 EOF
-for pt in "${ports_all[@]}"; do
-  echo "      - \"${pt}\"" >>"${TMPF}"
-done
-cat >>"${TMPF}" <<'EOF'
-    url: http://www.gstatic.com/generate_204
-    interval: 180
+  for pt in "${ports_all[@]}"; do
+    echo "      - \"${pt}\"" >>"${TMPF}"
+  done
+fi
 
 # 规则
 cat >>"${TMPF}" <<'EOF'
@@ -882,8 +1181,12 @@ rules:
   - DOMAIN-KEYWORD,weixin,DIRECT
   - DOMAIN-KEYWORD,alipay,DIRECT
   - GEOIP,CN,DIRECT
-  - MATCH,🚀 节点选择
 EOF
+if [ "${ENABLE_FALLBACK}" = "1" ]; then
+  echo "  - MATCH,故障转移" >>"${TMPF}"
+else
+  echo "  - MATCH,🚀 节点选择" >>"${TMPF}"
+fi
 
 mv -f "${TMPF}" "${TARGET}"
 echo "[OK] Clash 订阅已写入：${TARGET}"
@@ -921,4 +1224,3 @@ echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
-# （此处函数已前移至 helper 区域，避免在调用前未定义）
