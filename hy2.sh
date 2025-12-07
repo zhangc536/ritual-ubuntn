@@ -720,18 +720,36 @@ apply_irq_affinity_for_iface() {
   local ncpu
   if command -v nproc >/dev/null 2>&1; then ncpu="$(nproc)"; else ncpu="$(grep -cE '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"; fi
   [ -z "$ncpu" ] && ncpu=1
-  local irqs
-  irqs="$(grep -iE "$iface" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':' )"
-  [ -z "$irqs" ] && { echo "[WARN] 未找到 $iface 的 IRQ，跳过 affinity"; return 0; }
-  local idx=0
+  # 更健壮地获取 IRQ：优先从 sysfs，其次从 /proc/interrupts（匹配接口名或驱动名）
+  local irqs driver
+  # 1) sysfs MSI-X 列表（最可靠）
+  if [ -d "/sys/class/net/$iface/device/msi_irqs" ]; then
+    irqs="$(ls -1 "/sys/class/net/$iface/device/msi_irqs" 2>/dev/null | tr '\n' ' ')"
+  fi
+  # 2) 单 IRQ 文件回退
+  if [ -z "$irqs" ] && [ -f "/sys/class/net/$iface/device/irq" ]; then
+    irqs="$(cat "/sys/class/net/$iface/device/irq" 2>/dev/null)"
+  fi
+  # 3) /proc/interrupts：匹配接口名或驱动名（virtio/ena/ixgbe 等常见驱动名）
+  if [ -z "$irqs" ]; then
+    if command -v ethtool >/dev/null 2>&1; then
+      driver="$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/ {print $2}')"
+    fi
+    irqs="$(grep -iE "${iface}|${driver:-}" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':')"
+  fi
+  if [ -z "$irqs" ]; then
+    echo "[WARN] 未找到 $iface 的 IRQ（可能为虚拟 NIC、驱动未暴露或权限受限），跳过 affinity"
+    return 0
+  fi
+  local idx=0 count=0
   for irq in $irqs; do
     local cpu=$((idx % ncpu))
     local mask
     mask="$(printf "%x" $((1<<cpu)))"
     echo "$mask" >/proc/irq/"$irq"/smp_affinity 2>/dev/null || true
-    idx=$((idx+1))
+    idx=$((idx+1)); count=$((count+1))
   done
-  echo "[OK] 已设置 $iface 的 IRQ 亲和性分散到 ${ncpu} 核（部分云环境可能被宿主机忽略）"
+  echo "[OK] 已设置 $iface 的 IRQ 亲和性分散到 ${ncpu} 核（共 ${count} 个中断；部分云环境可能被宿主机忽略）"
 }
 
 # ---- helper: RPS 调优（多核接收包调度） ----
