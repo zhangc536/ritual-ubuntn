@@ -93,6 +93,7 @@ SYSCTL_PERSIST_FILE="${SYSCTL_PERSIST_FILE:-/etc/sysctl.d/99-hy2-tune.conf}"
 
 SET_IRQ_AFFINITY="${SET_IRQ_AFFINITY:-1}"            # 设置 NIC IRQ 亲和性分散至多核
 DISABLE_IRQBALANCE="${DISABLE_IRQBALANCE:-0}"         # 可选：停止 irqbalance 以使用手动 affinity
+IRQ_MATCH_HINT="${IRQ_MATCH_HINT:-}"                  # 可选：/proc/interrupts 额外匹配提示（如 virtio|ena|ixgbe）
 
 SET_RPS="${SET_RPS:-1}"                              # 启用 RPS（接收包在多核上调度）
 RPS_FLOW_CNT="${RPS_FLOW_CNT:-8192}"                 # 每队列 RPS flow 数量
@@ -790,10 +791,25 @@ apply_irq_affinity_for_iface() {
     if command -v ethtool >/dev/null 2>&1; then
       driver="$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/ {print $2}')"
     fi
-    irqs="$(grep -iE "${iface}|${driver:-}" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':')"
+    # 构造更宽松的匹配模式
+    local pat
+    if [ -n "${IRQ_MATCH_HINT:-}" ]; then
+      pat="${IRQ_MATCH_HINT}"
+    else
+      pat="${iface}"
+      [ -n "${driver:-}" ] && pat="${pat}|${driver}"
+      case "${driver:-}" in
+        *virtio*) pat="${pat}|virtio" ;;
+        *ena*) pat="${pat}|ena" ;;
+        *ixgbe*) pat="${pat}|ixgbe" ;;
+      esac
+    fi
+    irqs="$(grep -iE "$pat" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':')"
+    [ -n "${pat:-}" ] && echo "[INFO] /proc/interrupts 匹配模式：$pat" || true
   fi
   if [ -z "${irqs:-}" ]; then
     echo "[WARN] 未找到 $iface 的 IRQ（可能为虚拟 NIC、驱动未暴露或权限受限），跳过 affinity"
+    echo "      如需手动匹配，可设置 IRQ_MATCH_HINT，例如：IRQ_MATCH_HINT='virtio|ena|ixgbe'"
     return 0
   fi
   local idx=0 count=0
