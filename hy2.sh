@@ -76,6 +76,26 @@ SET_NIC_COALESCE="${SET_NIC_COALESCE:-0}"      # 启用网卡中断合并（1=�
 RX_COALESCE_USECS="${RX_COALESCE_USECS:-16}"   # RX 中断合并微秒
 TX_COALESCE_USECS="${TX_COALESCE_USECS:-16}"   # TX 中断合并微秒
 
+# 持久化与 NIC/RPS/Policing 相关可选开关
+ENABLE_PERSIST_SYSCTL="${ENABLE_PERSIST_SYSCTL:-1}"   # 持久化写入 sysctl（提升 UDP 缓冲，重启仍生效）
+SYSCTL_PERSIST_FILE="${SYSCTL_PERSIST_FILE:-/etc/sysctl.d/99-hy2-tune.conf}"
+
+SET_IRQ_AFFINITY="${SET_IRQ_AFFINITY:-1}"            # 设置 NIC IRQ 亲和性分散至多核
+DISABLE_IRQBALANCE="${DISABLE_IRQBALANCE:-0}"         # 可选：停止 irqbalance 以使用手动 affinity
+
+SET_RPS="${SET_RPS:-1}"                              # 启用 RPS（接收包在多核上调度）
+RPS_FLOW_CNT="${RPS_FLOW_CNT:-8192}"                 # 每队列 RPS flow 数量
+RPS_CPUS_MASK="${RPS_CPUS_MASK:-}"                   # 可选：指定十六进制 CPU 掩码（默认自动计算）
+
+SET_NIC_CHANNELS="${SET_NIC_CHANNELS:-0}"            # 配置网卡多队列（ethtool -L）
+NIC_RX_CHANNELS="${NIC_RX_CHANNELS:-}"               # RX 队列数（可选）
+NIC_TX_CHANNELS="${NIC_TX_CHANNELS:-}"               # TX 队列数（可选）
+NIC_COMBINED_CHANNELS="${NIC_COMBINED_CHANNELS:-}"   # 合并队列数（优先）
+
+ENABLE_INGRESS_POLICING="${ENABLE_INGRESS_POLICING:-0}"  # 启用 ingress policing（限突发）
+INGRESS_RATE="${INGRESS_RATE:-}"                         # 速率（如 1000mbit；默认取 TC_MAX_RATE）
+INGRESS_BURST="${INGRESS_BURST:-64k}"                    # 突发大小（如 64k）
+
 # ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
 escape_for_sed() {
   # read input as $1
@@ -441,6 +461,8 @@ apply_runtime_net_tuning() {
   sysctl -w net.core.default_qdisc="${DEFAULT_QDISC}" >/dev/null 2>&1 || true
   sysctl -w net.ipv4.udp_rmem_min="${UDP_RMEM_MIN}" >/dev/null 2>&1 || true
   sysctl -w net.ipv4.udp_wmem_min="${UDP_WMEM_MIN}" >/dev/null 2>&1 || true
+  # 可选：提高 conntrack 表大小，缓解高并发爆表
+  sysctl -w net.netfilter.nf_conntrack_max="${CONNTRACK_MAX}" >/dev/null 2>&1 || true
 
   # 低延迟：忙轮询与 NAPI 预算（风险：增 CPU 占用）
   if [ "${ENABLE_BUSY_POLL}" = "1" ]; then
@@ -453,7 +475,41 @@ apply_runtime_net_tuning() {
   else
     echo "[INFO] Busy Poll 已禁用（ENABLE_BUSY_POLL=0）"
   fi
-  echo "[OK] 已应用运行时网络调优参数"
+  # 持久化写入 sysctl，确保重启后仍生效
+  ensure_persistent_sysctl_tuning
+  echo "[OK] 已应用运行时网络调优参数并完成持久化"
+}
+
+# ---- helper: 写入持久化 sysctl 调优到 /etc/sysctl.d ----
+ensure_persistent_sysctl_tuning() {
+  if [ "${ENABLE_PERSIST_SYSCTL}" != "1" ]; then
+    echo "[INFO] 已跳过持久化 sysctl（ENABLE_PERSIST_SYSCTL=0）"
+    return 0
+  fi
+  local f="${SYSCTL_PERSIST_FILE}"
+  mkdir -p "$(dirname "$f")"
+  # 若存在旧文件，先备份，便于回滚与审计
+  if [ -f "$f" ]; then
+    local ts
+    ts="$(date +%s 2>/dev/null || echo 0)"
+    cp -a "$f" "$f.bak.$ts" 2>/dev/null || cp "$f" "$f.bak.$ts" 2>/dev/null || true
+    echo "[INFO] 已备份原 sysctl 文件为: $f.bak.$ts"
+  fi
+  cat >"$f" <<EOF
+# hy2.sh 持久化网络调优（自动生成）
+net.core.rmem_max=${NET_RMEM_MAX}
+net.core.wmem_max=${NET_WMEM_MAX}
+net.core.rmem_default=${NET_RMEM_DEF}
+net.core.wmem_default=${NET_WMEM_DEF}
+net.core.netdev_max_backlog=${NET_BACKLOG}
+net.ipv4.udp_rmem_min=${UDP_RMEM_MIN}
+net.ipv4.udp_wmem_min=${UDP_WMEM_MIN}
+net.core.default_qdisc=${DEFAULT_QDISC}
+net.netfilter.nf_conntrack_max=${CONNTRACK_MAX}
+EOF
+  # 尝试加载该文件；失败则退回加载系统全部
+  sysctl -p "$f" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
+  echo "[OK] 已写入持久化 sysctl 调优（$f）"
 }
 
 # ---- helper: 检测默认出口网卡 ----
@@ -505,6 +561,8 @@ dscp_to_value() {
 apply_extreme_loss_mitigation() {
   local iface="$(detect_main_iface)"
   [ -z "$iface" ] && echo "[WARN] 未能检测到主网卡，跳过极限抗丢包步骤" && return 0
+  # 兜底：确保端口列表已定义，便于独立调用本函数
+  PORT_LIST_CSV="${PORT_LIST_CSV:-$(parse_port_list)}"
 
   # 1) 可选关闭 GRO/GSO（减少聚合与乱序导致的尾延迟/重传）
   if [ "${DISABLE_GRO_GSO}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
@@ -540,6 +598,10 @@ apply_extreme_loss_mitigation() {
       done
       echo "[OK] iptables raw NOTRACK 已应用于 UDP 端口"
     elif command -v nft >/dev/null 2>&1; then
+      # 确保 inet raw 表与链存在（优先 notrack 钩子）
+      nft list table inet raw >/dev/null 2>&1 || nft add table inet raw >/dev/null 2>&1 || true
+      nft list chain inet raw prerouting >/dev/null 2>&1 || nft add chain inet raw prerouting { type filter hook prerouting priority -300; } >/dev/null 2>&1 || true
+      nft list chain inet raw output >/dev/null 2>&1 || nft add chain inet raw output { type filter hook output priority -300; } >/dev/null 2>&1 || true
       for pt in "${ports[@]}"; do
         nft add rule inet raw prerouting udp dport "$pt" notrack >/dev/null 2>&1 || true
         nft add rule inet raw output udp sport "$pt" notrack >/dev/null 2>&1 || true
@@ -618,6 +680,102 @@ apply_extreme_loss_mitigation() {
     ethtool -C "$iface" rx-usecs "$RX_COALESCE_USECS" tx-usecs "$TX_COALESCE_USECS" >/dev/null 2>&1 || true
     echo "[OK] 已设置 $iface 中断合并：rx-usecs=$RX_COALESCE_USECS tx-usecs=$TX_COALESCE_USECS"
   fi
+
+  # 8) NIC 多队列 + IRQ affinity + RPS（提高 PPS 能力）
+  apply_nic_channels_for_iface "$iface"
+  apply_irq_affinity_for_iface "$iface"
+  apply_rps_tuning_for_iface "$iface"
+
+  # 9) ingress policing（控制突发，需提供速率）
+  apply_ingress_policing_for_iface "$iface"
+}
+
+# ---- helper: 配置网卡多队列（ethtool -L） ----
+apply_nic_channels_for_iface() {
+  local iface="$1"
+  [ "${SET_NIC_CHANNELS}" = "1" ] || return 0
+  command -v ethtool >/dev/null 2>&1 || { echo "[WARN] 缺少 ethtool，跳过 NIC 多队列"; return 0; }
+  if [ -n "${NIC_COMBINED_CHANNELS}" ]; then
+    ethtool -L "$iface" combined "${NIC_COMBINED_CHANNELS}" >/dev/null 2>&1 || echo "[WARN] 设置 combined 队列失败；可能不支持"
+  else
+    [ -n "${NIC_RX_CHANNELS}" ] && ethtool -L "$iface" rx "${NIC_RX_CHANNELS}" >/dev/null 2>&1 || true
+    [ -n "${NIC_TX_CHANNELS}" ] && ethtool -L "$iface" tx "${NIC_TX_CHANNELS}" >/dev/null 2>&1 || true
+  fi
+  echo "[OK] 已尝试配置 $iface 的多队列（ethtool -L；虚拟 NIC 可能被宿主机限制）"
+}
+
+# ---- helper: 分散 NIC 中断到多核（IRQ affinity） ----
+apply_irq_affinity_for_iface() {
+  local iface="$1"
+  [ "${SET_IRQ_AFFINITY}" = "1" ] || return 0
+  # 可选停止 irqbalance，避免其覆盖手动 affinity
+  if [ "${DISABLE_IRQBALANCE}" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+    local active enabled
+    active="$(systemctl is-active irqbalance 2>/dev/null || echo unknown)"
+    enabled="$(systemctl is-enabled irqbalance 2>/dev/null || echo unknown)"
+    systemctl stop irqbalance >/dev/null 2>&1 || true
+    systemctl disable irqbalance >/dev/null 2>&1 || true
+    echo "[INFO] 已停用 irqbalance（active=${active}, enabled=${enabled}）——请在测试结束后决定是否重新启用"
+  fi
+  local ncpu
+  if command -v nproc >/dev/null 2>&1; then ncpu="$(nproc)"; else ncpu="$(grep -cE '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"; fi
+  [ -z "$ncpu" ] && ncpu=1
+  local irqs
+  irqs="$(grep -iE "$iface" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':' )"
+  [ -z "$irqs" ] && { echo "[WARN] 未找到 $iface 的 IRQ，跳过 affinity"; return 0; }
+  local idx=0
+  for irq in $irqs; do
+    local cpu=$((idx % ncpu))
+    local mask
+    mask="$(printf "%x" $((1<<cpu)))"
+    echo "$mask" >/proc/irq/"$irq"/smp_affinity 2>/dev/null || true
+    idx=$((idx+1))
+  done
+  echo "[OK] 已设置 $iface 的 IRQ 亲和性分散到 ${ncpu} 核（部分云环境可能被宿主机忽略）"
+}
+
+# ---- helper: RPS 调优（多核接收包调度） ----
+apply_rps_tuning_for_iface() {
+  local iface="$1"
+  [ "${SET_RPS}" = "1" ] || return 0
+  local mask="${RPS_CPUS_MASK}"
+  if [ -z "$mask" ]; then
+    local ncpu
+    if command -v nproc >/dev/null 2>&1; then ncpu="$(nproc)"; else ncpu="$(grep -cE '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"; fi
+    [ -z "$ncpu" ] && ncpu=1
+    # 使用所有 CPU 的掩码（避免 32 位溢出时退化为低位）
+    if [ "$ncpu" -le 32 ]; then
+      mask="$(printf "%x" $(( (1<<ncpu) - 1 )) )"
+    else
+      mask="ffffffff"
+    fi
+  fi
+  for f in /sys/class/net/"$iface"/queues/rx-*/rps_cpus; do
+    [ -f "$f" ] && echo "$mask" >"$f" 2>/dev/null || true
+  done
+  for f in /sys/class/net/"$iface"/queues/rx-*/rps_flow_cnt; do
+    [ -f "$f" ] && echo "${RPS_FLOW_CNT}" >"$f" 2>/dev/null || true
+  done
+  echo "[OK] 已应用 $iface 的 RPS（mask=$mask flow_cnt=${RPS_FLOW_CNT}）"
+}
+
+# ---- helper: ingress policing（限制突发，降低上游丢包放大） ----
+apply_ingress_policing_for_iface() {
+  local iface="$1"
+  [ "${ENABLE_INGRESS_POLICING}" = "1" ] || return 0
+  local rate="${INGRESS_RATE:-${TC_MAX_RATE:-}}"
+  if [ -z "$rate" ]; then
+    echo "[WARN] 未设置 INGRESS_RATE/TC_MAX_RATE，跳过 ingress policing"
+    return 0
+  fi
+  command -v tc >/dev/null 2>&1 || { echo "[WARN] 缺少 tc，无法应用 ingress policing"; return 0; }
+  tc qdisc show dev "$iface" | grep -q "ffff:" || tc qdisc add dev "$iface" handle ffff: ingress >/dev/null 2>&1 || true
+  # 使用 u32 通配，基于 action police 的速率与突发控制
+  if tc filter replace dev "$iface" parent ffff: protocol all u32 match u32 0 0 police rate "$rate" burst "${INGRESS_BURST}" conform-exceed drop >/dev/null 2>&1; then
+    echo "[OK] 已启用 ingress policing：rate=$rate burst=${INGRESS_BURST}"
+  else
+    echo "[WARN] tc filter/警察（police）失败：可能内核/驱动不支持或权限受限，已跳过"
+  fi
 }
 
 # ---- helper: 生成自签证书并导入到 /acme/shared ----
@@ -668,6 +826,10 @@ generate_self_signed_cert() {
     USE_EXISTING_CERT=1
     USE_CERT_PATH="/acme/shared/fullchain.pem"
     USE_KEY_PATH="/acme/shared/privkey.pem"
+    # 设置证书权限，降低泄露风险
+    chmod 700 /acme/shared 2>/dev/null || true
+    chmod 600 "$USE_KEY_PATH" 2>/dev/null || true
+    chmod 644 "$USE_CERT_PATH" 2>/dev/null || true
     echo "[OK] 自签证书已生成并导入 /acme/shared"
   else
     echo "[ERROR] 无 openssl，无法生成自签证书。请安装 openssl 后重试。"
