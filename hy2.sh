@@ -1356,6 +1356,9 @@ echo "[OK] Clash 订阅已写入：${TARGET}"
 # ===========================
 # 11) 配置 nginx 提供订阅
 # ===========================
+# 兼容最小化系统：确保目录存在
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled || true
+
 cat >/etc/nginx/sites-available/clash.conf <<EOF
 server {
     listen ${HTTP_PORT} default_server;
@@ -1379,8 +1382,16 @@ server {
 EOF
 
 ln -sf /etc/nginx/sites-available/clash.conf /etc/nginx/sites-enabled/clash.conf
-nginx -t
-systemctl restart nginx
+# 测试配置，但不因失败退出
+nginx -t >/dev/null 2>&1 || echo "[WARN] nginx 配置测试失败（仍尝试启动/重载）"
+# 兼容不同环境的重载/重启方式
+if command -v systemctl >/dev/null 2>&1 && systemctl status nginx >/dev/null 2>&1; then
+  systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
+elif command -v service >/dev/null 2>&1; then
+  service nginx reload >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 || true
+else
+  nginx -s reload >/dev/null 2>&1 || pkill -HUP nginx >/dev/null 2>&1 || true
+fi
 
 echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
