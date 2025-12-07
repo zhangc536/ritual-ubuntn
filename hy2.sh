@@ -1126,7 +1126,9 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 SVC
 
-systemctl daemon-reload
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now hysteria-server || true
   sleep 2
