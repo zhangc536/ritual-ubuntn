@@ -39,7 +39,7 @@ HTTP_PORT="${HTTP_PORT:-8080}"
 
 # 极限抗丢包默认开启（可通过环境变量关闭/调参）
 DISABLE_GRO_GSO="${DISABLE_GRO_GSO:-1}"      # 关闭聚合/分段（1=关闭），降低尾延迟与乱序
-ENABLE_TC_QDISC="${ENABLE_TC_QDISC:-2}"      # 开启 tc 队列（1=fq_codel，2=cake）
+ENABLE_TC_QDISC="${ENABLE_TC_QDISC:-2}"      # 开启 tc 队列（1=fq_codel，2=cake，3=fq pacing）
 TC_MAX_RATE="${TC_MAX_RATE:-}"               # 可选：限速，配合 fq_codel/cake（如 1000mbit）
 NOTRACK_UDP="${NOTRACK_UDP:-1}"              # 跳过 UDP conntrack（1=启用），降低高并发丢包
 CONNTRACK_MAX="${CONNTRACK_MAX:-1048576}"    # 可选：提高 conntrack 表大小（如 1048576）
@@ -64,6 +64,17 @@ NET_BACKLOG="${NET_BACKLOG:-250000}"
 UDP_RMEM_MIN="${UDP_RMEM_MIN:-16384}"
 UDP_WMEM_MIN="${UDP_WMEM_MIN:-16384}"
 DEFAULT_QDISC="${DEFAULT_QDISC:-fq}"
+
+# TCP 拥塞/ECN 与 Hysteria Brutal 可选项
+ENABLE_TCP_TUNE="${ENABLE_TCP_TUNE:-1}"         # 启用 TCP 拥塞与 ECN 调优
+TCP_CONG_ALGO="${TCP_CONG_ALGO:-bbr}"           # TCP 拥塞算法（bbr/cubic 等；bbr 将随内核版本使用 v2/v3）
+ENABLE_ECN="${ENABLE_ECN:-1}"                    # 启用 ECN（1=开启）
+TCP_ECN_FALLBACK="${TCP_ECN_FALLBACK:-1}"        # ECN 黑洞回退（若内核支持）
+
+# Hysteria Brutal 通过带宽字段触发；单位支持 bps/kbps/mbps/gbps/tbps
+HY2_BW_UP="${HY2_BW_UP:-}"                       # 服务器上行（客户端下行）
+HY2_BW_DOWN="${HY2_BW_DOWN:-}"                   # 服务器下行（客户端上行）
+IGNORE_CLIENT_BW="${IGNORE_CLIENT_BW:-0}"        # 服务器忽略客户端带宽（1=忽略，强制使用 BBR）
 
 # 低延迟相关：Busy Poll 与网卡中断合并（可选）
 ENABLE_BUSY_POLL="${ENABLE_BUSY_POLL:-1}"     # 启用忙轮询/预算调优（提升低延迟，增 CPU）
@@ -194,6 +205,17 @@ auth:
   type: password
   password: ${pass}
 EOF
+  # Brutal 通过带宽字段触发（如未设置则保持使用 BBR）
+  if [ -n "${HY2_BW_UP:-}" ] || [ -n "${HY2_BW_DOWN:-}" ]; then
+    {
+      echo "bandwidth:"
+      [ -n "${HY2_BW_UP:-}" ] && echo "  up: ${HY2_BW_UP}"
+      [ -n "${HY2_BW_DOWN:-}" ] && echo "  down: ${HY2_BW_DOWN}"
+    } >>"/etc/hysteria/config-${port}.yaml"
+  fi
+  if [ "${IGNORE_CLIENT_BW}" = "1" ]; then
+    echo "ignoreClientBandwidth: true" >>"/etc/hysteria/config-${port}.yaml"
+  fi
   if [ "${DISABLE_OBFS}" != "1" ]; then
     cat >>"/etc/hysteria/config-${port}.yaml" <<EOF
 obfs:
@@ -221,6 +243,17 @@ auth:
   type: password
   password: ${HY2_PASS}
 EOF
+  # Brutal 通过带宽字段触发（如未设置则保持使用 BBR）
+  if [ -n "${HY2_BW_UP:-}" ] || [ -n "${HY2_BW_DOWN:-}" ]; then
+    {
+      echo "bandwidth:"
+      [ -n "${HY2_BW_UP:-}" ] && echo "  up: ${HY2_BW_UP}"
+      [ -n "${HY2_BW_DOWN:-}" ] && echo "  down: ${HY2_BW_DOWN}"
+    } >>/etc/hysteria/config.yaml
+  fi
+  if [ "${IGNORE_CLIENT_BW}" = "1" ]; then
+    echo "ignoreClientBandwidth: true" >>/etc/hysteria/config.yaml
+  fi
   if [ "${DISABLE_OBFS}" != "1" ]; then
     cat >>/etc/hysteria/config.yaml <<EOF
 obfs:
@@ -464,6 +497,20 @@ apply_runtime_net_tuning() {
   # 可选：提高 conntrack 表大小，缓解高并发爆表
   sysctl -w net.netfilter.nf_conntrack_max="${CONNTRACK_MAX}" >/dev/null 2>&1 || true
 
+  # TCP 拥塞控制与 ECN（配合 fq pacing 提升尾延迟表现）
+  if [ "${ENABLE_TCP_TUNE}" = "1" ]; then
+    sysctl -w net.ipv4.tcp_congestion_control="${TCP_CONG_ALGO}" >/dev/null 2>&1 || true
+    if [ "${ENABLE_ECN}" = "1" ]; then
+      sysctl -w net.ipv4.tcp_ecn=1 >/dev/null 2>&1 || true
+      sysctl -w net.ipv4.tcp_ecn_fallback="${TCP_ECN_FALLBACK}" >/dev/null 2>&1 || true
+      echo "[OK] 已启用 TCP 拥塞=${TCP_CONG_ALGO} 与 ECN（fallback=${TCP_ECN_FALLBACK}）"
+    else
+      echo "[INFO] ECN 已禁用（ENABLE_ECN=0）"
+    fi
+  else
+    echo "[INFO] TCP 拥塞/ECN 调优已禁用（ENABLE_TCP_TUNE=0）"
+  fi
+
   # 低延迟：忙轮询与 NAPI 预算（风险：增 CPU 占用）
   if [ "${ENABLE_BUSY_POLL}" = "1" ]; then
     sysctl -w net.core.busy_poll="${NET_BUSY_POLL}" >/dev/null 2>&1 || true
@@ -506,6 +553,9 @@ net.ipv4.udp_rmem_min=${UDP_RMEM_MIN}
 net.ipv4.udp_wmem_min=${UDP_WMEM_MIN}
 net.core.default_qdisc=${DEFAULT_QDISC}
 net.netfilter.nf_conntrack_max=${CONNTRACK_MAX}
+net.ipv4.tcp_congestion_control=${TCP_CONG_ALGO}
+net.ipv4.tcp_ecn=$([ "${ENABLE_ECN}" = "1" ] && echo 1 || echo 0)
+net.ipv4.tcp_ecn_fallback=${TCP_ECN_FALLBACK}
 EOF
   # 尝试加载该文件；失败则退回加载系统全部
   sysctl -p "$f" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
@@ -581,6 +631,10 @@ apply_extreme_loss_mitigation() {
         tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
         echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
       fi
+    elif [ "${ENABLE_TC_QDISC}" = "3" ]; then
+      # 直接使用 fq pacing（配合 BBR 更佳）
+      tc qdisc replace dev "$iface" root fq >/dev/null 2>&1 || true
+      echo "[OK] 已在 $iface 应用 fq（pacing）"
     else
       tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
       echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
