@@ -1093,8 +1093,8 @@ USE_EXISTING_CERT=1
 USE_CERT_PATH=""
 USE_KEY_PATH=""
 generate_self_signed_cert
-apply_runtime_net_tuning
-apply_extreme_loss_mitigation
+apply_runtime_net_tuning || true
+apply_extreme_loss_mitigation || true
 
 # ===========================
 # 6) 写 hysteria 配置（始终 TLS，自签证书）
@@ -1145,7 +1145,7 @@ fi
 # 启动额外端口实例（自签 TLS）
 if [ -n "${HY2_PORTS:-}" ]; then
   # 通过封装函数写入各端口配置并启动实例
-  start_additional_instances_with_tls
+  start_additional_instances_with_tls || true
 fi
 
 
