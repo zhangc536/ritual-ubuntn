@@ -600,8 +600,8 @@ apply_extreme_loss_mitigation() {
     elif command -v nft >/dev/null 2>&1; then
       # 确保 inet raw 表与链存在（优先 notrack 钩子）
       nft list table inet raw >/dev/null 2>&1 || nft add table inet raw >/dev/null 2>&1 || true
-      nft list chain inet raw prerouting >/dev/null 2>&1 || nft add chain inet raw prerouting { type filter hook prerouting priority -300; } >/dev/null 2>&1 || true
-      nft list chain inet raw output >/dev/null 2>&1 || nft add chain inet raw output { type filter hook output priority -300; } >/dev/null 2>&1 || true
+    nft list chain inet raw prerouting >/dev/null 2>&1 || nft add chain inet raw prerouting '{ type filter hook prerouting priority -300; }' >/dev/null 2>&1 || true
+    nft list chain inet raw output >/dev/null 2>&1 || nft add chain inet raw output '{ type filter hook output priority -300; }' >/dev/null 2>&1 || true
       for pt in "${ports[@]}"; do
         nft add rule inet raw prerouting udp dport "$pt" notrack >/dev/null 2>&1 || true
         nft add rule inet raw output udp sport "$pt" notrack >/dev/null 2>&1 || true
