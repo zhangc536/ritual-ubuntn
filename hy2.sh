@@ -1023,6 +1023,77 @@ cleanup_space_safe() {
   $SUDO_BIN rm -rf /tmp/* || true
 }
 
+uninstall_snapd_safe() {
+  local SUDO_BIN=""
+  if command -v sudo >/dev/null 2>&1; then SUDO_BIN="sudo"; fi
+  $SUDO_BIN systemctl stop snapd || true
+  if command -v snap >/dev/null 2>&1; then
+    snap list || true
+    $SUDO_BIN snap remove lxd || true
+    $SUDO_BIN snap remove core20 || true
+    $SUDO_BIN snap remove snapd || true
+    $SUDO_BIN snap remove core || true
+  fi
+  $SUDO_BIN apt purge snapd -y || true
+  $SUDO_BIN rm -rf /var/cache/snapd || true
+  $SUDO_BIN rm -rf /var/lib/snapd || true
+  $SUDO_BIN rm -rf /snap || true
+  $SUDO_BIN rm -rf /var/snap || true
+  $SUDO_BIN rm -rf ~/snap || true
+  $SUDO_BIN rm -rf /var/lib/apt/lists/* || true
+  $SUDO_BIN apt clean || true
+  $SUDO_BIN bash -lc 'echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" > /etc/resolv.conf' || true
+  cleanup_space_safe
+}
+
+check_disk_and_uninstall_snapd() {
+  local avail
+  avail="$(df -m / | awk 'NR==2{print $4}')"
+  if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then
+    uninstall_snapd_safe
+  fi
+}
+
+setup_low_disk_uninstall_systemd() {
+  cat >/etc/systemd/system/uninstall-snapd-low-disk.service <<'SVC'
+[Unit]
+Description=Uninstall snapd when low disk space
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc 'avail=$(df -m / | awk "NR==2{print $4}"); if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true; fi'
+SVC
+
+  cat >/etc/systemd/system/uninstall-snapd-now.service <<'SVC'
+[Unit]
+Description=One-shot uninstall snapd and cleanup space
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc 'SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true'
+SVC
+
+  cat >/etc/systemd/system/uninstall-snapd-low-disk.timer <<'TIMER'
+[Unit]
+Description=Timer to check disk and uninstall snapd
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now uninstall-snapd-low-disk.timer >/dev/null 2>&1 || true
+  fi
+}
+
 # ===========================
 # 模式选择：1 全新安装；2 仅添加维护任务
 # 可用环境变量 SCRIPT_MODE=1/2 跳过交互
@@ -1507,77 +1578,3 @@ echo "[OK] Clash 订阅通过 nginx 提供："
 echo "    http://${SELECTED_IP}:${HTTP_PORT}/clash_subscription.yaml"
 echo
 echo "提示：导入订阅后，在 Clash 客户端将 Proxy 组或 Stream/Game/VoIP 组指向你的节点并测试。"
-
-uninstall_snapd_safe() {
-  local SUDO_BIN=""
-  if command -v sudo >/dev/null 2>&1; then SUDO_BIN="sudo"; fi
-  $SUDO_BIN systemctl stop snapd || true
-  if command -v snap >/dev/null 2>&1; then
-    snap list || true
-    $SUDO_BIN snap remove lxd || true
-    $SUDO_BIN snap remove core20 || true
-    $SUDO_BIN snap remove snapd || true
-    $SUDO_BIN snap remove core || true
-  fi
-  $SUDO_BIN apt purge snapd -y || true
-  $SUDO_BIN rm -rf /var/cache/snapd || true
-  $SUDO_BIN rm -rf /var/lib/snapd || true
-  $SUDO_BIN rm -rf /snap || true
-  $SUDO_BIN rm -rf /var/snap || true
-  $SUDO_BIN rm -rf ~/snap || true
-  $SUDO_BIN rm -rf /var/lib/apt/lists/* || true
-  $SUDO_BIN apt clean || true
-  $SUDO_BIN bash -lc 'echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" > /etc/resolv.conf' || true
-  cleanup_space_safe
-}
-
-check_disk_and_uninstall_snapd() {
-  local avail
-  avail="$(df -m / | awk 'NR==2{print $4}')"
-  if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then
-    uninstall_snapd_safe
-  fi
-}
-
-setup_low_disk_uninstall_systemd() {
-  cat >/etc/systemd/system/uninstall-snapd-low-disk.service <<'SVC'
-[Unit]
-Description=Uninstall snapd when low disk space
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -lc 'avail=$(df -m / | awk "NR==2{print $4}"); if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true; fi'
-SVC
-
-  cat >/etc/systemd/system/uninstall-snapd-now.service <<'SVC'
-[Unit]
-Description=One-shot uninstall snapd and cleanup space
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -lc 'SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true'
-SVC
-
-  cat >/etc/systemd/system/uninstall-snapd-low-disk.timer <<'TIMER'
-[Unit]
-Description=Timer to check disk and uninstall snapd
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-TIMER
-
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl enable --now uninstall-snapd-low-disk.timer >/dev/null 2>&1 || true
-  fi
-}
-
-check_disk_and_uninstall_snapd
-setup_low_disk_uninstall_systemd
