@@ -1011,6 +1011,18 @@ setup_auto_reboot_cron() {
   fi
 }
 
+cleanup_space_safe() {
+  local SUDO_BIN=""
+  if command -v sudo >/dev/null 2>&1; then SUDO_BIN="sudo"; fi
+  $SUDO_BIN apt clean || true
+  if command -v journalctl >/dev/null 2>&1; then
+    $SUDO_BIN journalctl --disk-usage || true
+    $SUDO_BIN journalctl --vacuum-size=100M || true
+  fi
+  $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true
+  $SUDO_BIN rm -rf /tmp/* || true
+}
+
 # ===========================
 # 模式选择：1 全新安装；2 仅添加维护任务
 # 可用环境变量 SCRIPT_MODE=1/2 跳过交互
@@ -1018,7 +1030,7 @@ setup_auto_reboot_cron() {
 SCRIPT_MODE="${SCRIPT_MODE:-}"
 if [ -z "$SCRIPT_MODE" ]; then
   if [ -t 0 ]; then
-    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每天自动清缓存+硬重启 [默认1]: " SCRIPT_MODE || true
+    read -r -p "请选择模式: 1) 全新安装  2) 仅添加每天自动清缓存+硬重启  3) 仅执行空间清理 [默认1]: " SCRIPT_MODE || true
   else
     SCRIPT_MODE="1"
   fi
@@ -1030,6 +1042,12 @@ case "${SCRIPT_MODE}" in
     ENABLE_AUTO_REBOOT_CACHE="${ENABLE_AUTO_REBOOT_CACHE:-1}"
     setup_auto_reboot_cron
     echo "[OK] 维护任务已添加，脚本结束。"
+    exit 0
+    ;;
+  3)
+    echo "[INFO] 选择模式 3：仅执行空间清理"
+    cleanup_space_safe
+    echo "[OK] 空间清理已完成，脚本结束。"
     exit 0
     ;;
   1|"")
@@ -1518,18 +1536,6 @@ check_disk_and_uninstall_snapd() {
   if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then
     uninstall_snapd_safe
   fi
-}
-
-cleanup_space_safe() {
-  local SUDO_BIN=""
-  if command -v sudo >/dev/null 2>&1; then SUDO_BIN="sudo"; fi
-  $SUDO_BIN apt clean || true
-  if command -v journalctl >/dev/null 2>&1; then
-    $SUDO_BIN journalctl --disk-usage || true
-    $SUDO_BIN journalctl --vacuum-size=100M || true
-  fi
-  $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true
-  $SUDO_BIN rm -rf /tmp/* || true
 }
 
 setup_low_disk_uninstall_systemd() {
