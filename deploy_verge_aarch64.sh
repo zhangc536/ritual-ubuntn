@@ -28,7 +28,7 @@ echo "==> 部署下载站: https://${FQDN} （Cloudflare 橙云 + DNS-01）"
 # 基础安装
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y nginx certbot python3-certbot-dns-cloudflare jq curl ufw
+apt-get install -y nginx certbot python3-certbot-dns-cloudflare jq curl
 
 # 下载目录
 mkdir -p /srv/downloads
@@ -79,8 +79,8 @@ upsert_dns() {
 # 先放 HTTP 配置（证书前的占位）
 cat >/etc/nginx/sites-available/${FQDN}.conf <<NGHTTP
 server {
-    listen 8071;
-    listen [::]:8071;
+    listen 8471;
+    listen [::]:8471;
     server_name ${FQDN};
     root /srv/downloads;
     index index.html;
@@ -131,15 +131,15 @@ fi
 # 切换为 HTTPS
 cat >/etc/nginx/sites-available/${FQDN}.conf <<'NGHTTPS'
 server {
-    listen 8071;
-    listen [::]:8071;
+    listen 80;
+    listen [::]:80;
     server_name FQDN_REPL;
-    return 301 https://$host$request_uri;
+    return 301 https://$host:8471$request_uri;
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 8471 ssl http2;
+    listen [::]:8471 ssl http2;
     server_name FQDN_REPL;
 
     root /srv/downloads;
@@ -169,24 +169,6 @@ NGHTTPS
 
 sed -i "s/FQDN_REPL/${FQDN}/g" /etc/nginx/sites-available/${FQDN}.conf
 nginx -t && systemctl reload nginx
-
-# UFW 基础放行
-ufw allow OpenSSH >/dev/null 2>&1 || true
-ufw allow 8071/tcp  >/dev/null 2>&1 || true
-ufw allow 443/tcp   >/dev/null 2>&1 || true
-echo "提示：如使用 UFW，请确认规则后再执行：ufw enable（远程操作请谨慎）"
-
-# 可选：仅允许 Cloudflare 访问 80/443
-if [ "${CF_LOCKDOWN}" -eq 1 ]; then
-  echo "==> 启用仅 Cloudflare 访问（8071/443）"
-  curl -fsSL https://www.cloudflare.com/ips-v4 | xargs -I{} ufw allow proto tcp from {} to any port 443
-  curl -fsSL https://www.cloudflare.com/ips-v6 | xargs -I{} ufw allow proto tcp from {} to any port 443
-  curl -fsSL https://www.cloudflare.com/ips-v4 | xargs -I{} ufw allow proto tcp from {} to any port 8071
-  curl -fsSL https://www.cloudflare.com/ips-v6 | xargs -I{} ufw allow proto tcp from {} to any port 8071
-  ufw deny 443/tcp || true
-  ufw deny 8071/tcp  || true
-  echo "已添加 CF 限制规则。执行 'ufw status' 查看。"
-fi
 
 # 写入“只同步 Apple 芯片 DMG”的同步脚本
 install -m 755 -o root -g root /dev/null /usr/local/bin/sync-verge-aarch64.sh
