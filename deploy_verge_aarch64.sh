@@ -7,7 +7,7 @@ set -euo pipefail
 CF_API_TOKEN="ZlH-iPvrBYMXgt2lpWLEF72ww_szK3HjBVNvHfx9"   # 仅 Zone:Read + DNS:Edit 权限
 CF_ZONE_ID="7a825c1242fec406de06b79fcd9572d2"            # 该域名的 Zone ID（zhangcde.asia）
 ROOT_DOMAIN="zhangcde.asia"                               # 你的主域
-SUBDOMAIN="gs"                                            # 子域名（按你当前使用的 gs）
+SUBDOMAIN="clash"                                            # 子域名（按你当前使用的 gs）
 EMAIL="zhangc784512@gmail.com"                            # 证书邮箱
 GH_TOKEN=""                                               # 可选：GitHub API Token（避免限额），无则留空
 CF_LOCKDOWN=0                                             # 1=仅允许 Cloudflare 访问 80/443；0=不开启
