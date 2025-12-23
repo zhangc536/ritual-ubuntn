@@ -1081,7 +1081,7 @@ Description=Timer to check disk and uninstall snapd
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=1h
+OnUnitActiveSec=10min
 Persistent=true
 
 [Install]
