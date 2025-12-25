@@ -1048,8 +1048,8 @@ uninstall_snapd_safe() {
 
 check_disk_and_uninstall_snapd() {
   local avail
-  avail="$(df -m / | awk 'NR==2{print $4}')"
-  if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then
+  avail="$(df -Pm --output=avail / 2>/dev/null | tail -n 1 | tr -d " " || true)"
+  if [ -n "${avail:-}" ] && echo "$avail" | grep -Eq '^[0-9]+$' && [ "$avail" -lt 2048 ]; then
     uninstall_snapd_safe
   fi
 }
@@ -1062,7 +1062,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -lc 'avail=$(df -m / | awk "NR==2{print $4}"); if [ -n "$avail" ] && [ "$avail" -lt 2048 ]; then SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true; fi'
+ExecStart=/bin/bash -c 'avail=$(df -Pm --output=avail / 2>/dev/null | tail -n 1 | tr -d " " || true); if [ -n "${avail:-}" ] && [[ "$avail" =~ ^[0-9]+$ ]] && [ "$avail" -lt 2048 ]; then systemctl stop snapd >/dev/null 2>&1 || true; if command -v snap >/dev/null 2>&1; then snap list >/dev/null 2>&1 || true; snap remove lxd >/dev/null 2>&1 || true; snap remove core20 >/dev/null 2>&1 || true; snap remove snapd >/dev/null 2>&1 || true; snap remove core >/dev/null 2>&1 || true; fi; apt purge snapd -y >/dev/null 2>&1 || true; rm -rf /var/cache/snapd /var/lib/snapd /snap /var/snap /root/snap >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true; apt clean >/dev/null 2>&1 || true; if command -v journalctl >/dev/null 2>&1; then journalctl --vacuum-size=100M >/dev/null 2>&1 || true; fi; find /var/log -type f -exec truncate -s 0 {} \; >/dev/null 2>&1 || true; rm -rf /tmp/* >/dev/null 2>&1 || true; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf 2>/dev/null || true; fi'
 SVC
 
   cat >/etc/systemd/system/uninstall-snapd-now.service <<'SVC'
@@ -1072,7 +1072,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -lc 'SUDO_BIN=""; command -v sudo >/dev/null 2>&1 && SUDO_BIN="sudo"; $SUDO_BIN systemctl stop snapd || true; if command -v snap >/dev/null 2>&1; then snap list || true; $SUDO_BIN snap remove lxd || true; $SUDO_BIN snap remove core20 || true; $SUDO_BIN snap remove snapd || true; $SUDO_BIN snap remove core || true; fi; $SUDO_BIN apt purge snapd -y || true; $SUDO_BIN rm -rf /var/cache/snapd || true; $SUDO_BIN rm -rf /var/lib/snapd || true; $SUDO_BIN rm -rf /snap || true; $SUDO_BIN rm -rf /var/snap || true; $SUDO_BIN rm -rf ~/snap || true; $SUDO_BIN rm -rf /var/lib/apt/lists/* || true; $SUDO_BIN apt clean || true; if command -v journalctl >/dev/null 2>&1; then $SUDO_BIN journalctl --disk-usage || true; $SUDO_BIN journalctl --vacuum-size=100M || true; fi; $SUDO_BIN find /var/log -type f -exec $SUDO_BIN truncate -s 0 {} \; || true; $SUDO_BIN rm -rf /tmp/* || true; $SUDO_BIN bash -lc "echo -e \"nameserver 1.1.1.1\\nnameserver 8.8.8.8\" > /etc/resolv.conf" || true'
+ExecStart=/bin/bash -c 'systemctl stop snapd >/dev/null 2>&1 || true; if command -v snap >/dev/null 2>&1; then snap list >/dev/null 2>&1 || true; snap remove lxd >/dev/null 2>&1 || true; snap remove core20 >/dev/null 2>&1 || true; snap remove snapd >/dev/null 2>&1 || true; snap remove core >/dev/null 2>&1 || true; fi; apt purge snapd -y >/dev/null 2>&1 || true; rm -rf /var/cache/snapd /var/lib/snapd /snap /var/snap /root/snap >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true; apt clean >/dev/null 2>&1 || true; if command -v journalctl >/dev/null 2>&1; then journalctl --vacuum-size=100M >/dev/null 2>&1 || true; fi; find /var/log -type f -exec truncate -s 0 {} \; >/dev/null 2>&1 || true; rm -rf /tmp/* >/dev/null 2>&1 || true; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf 2>/dev/null || true'
 SVC
 
   cat >/etc/systemd/system/uninstall-snapd-low-disk.timer <<'TIMER'
