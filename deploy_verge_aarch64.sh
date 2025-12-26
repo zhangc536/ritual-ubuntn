@@ -4,7 +4,7 @@ set -euo pipefail
 ############################
 # 你的实际参数（已填入）
 ############################
-CF_API_TOKEN="Ql0-F3FFSQCVmCsnf3JCo5O_jLNP9XESULkli1ai"   # 仅 Zone:Read + DNS:Edit 权限
+CF_API_TOKEN="${CF_API_TOKEN:-}"                          # 仅 Zone:Read + DNS:Edit 权限（建议用环境变量传入）
 CF_ZONE_ID="7a825c1242fec406de06b79fcd9572d2"            # 该域名的 Zone ID（zhangcde.asia）
 ROOT_DOMAIN="zhangcde.asia"                               # 你的主域
 SUBDOMAIN="clash"                                            # 子域名（按你当前使用的 gs）
@@ -24,6 +24,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "==> 部署下载站: https://${FQDN} （Cloudflare 橙云 + DNS-01）"
+
+if [ -z "${CF_API_TOKEN}" ]; then
+  echo "[ERR] 未设置 CF_API_TOKEN。请用环境变量传入：CF_API_TOKEN=xxx sudo bash $0"
+  exit 1
+fi
 
 # 基础安装
 export DEBIAN_FRONTEND=noninteractive
@@ -79,6 +84,8 @@ upsert_dns() {
 # 先放 HTTP 配置（证书前的占位）
 cat >/etc/nginx/sites-available/${FQDN}.conf <<NGHTTP
 server {
+    listen 80;
+    listen [::]:80;
     listen 8471;
     listen [::]:8471;
     server_name ${FQDN};
@@ -134,12 +141,12 @@ server {
     listen 80;
     listen [::]:80;
     server_name FQDN_REPL;
-    return 301 https://$host:8471$request_uri;
+    return 301 https://$host$request_uri;
 }
 
 server {
-    listen 8471 ssl http2;
-    listen [::]:8471 ssl http2;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name FQDN_REPL;
 
     root /srv/downloads;
@@ -156,6 +163,33 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     # MIME
+    types {
+        application/x-apple-diskimage dmg;
+        application/octet-stream pkg;
+        application/zip zip;
+    }
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cache-Control "public, max-age=604800, immutable" always;
+}
+
+server {
+    listen 8471 ssl http2;
+    listen [::]:8471 ssl http2;
+    server_name FQDN_REPL;
+
+    root /srv/downloads;
+    index index.html;
+    autoindex on;
+    autoindex_exact_size off;
+    autoindex_localtime on;
+
+    ssl_certificate     /etc/letsencrypt/live/FQDN_REPL/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/FQDN_REPL/privkey.pem;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
     types {
         application/x-apple-diskimage dmg;
         application/octet-stream pkg;
@@ -282,5 +316,5 @@ echo "🎉 完成！现在可访问："
 echo "  • 目录页   https://${FQDN}/"
 echo "  • 最新 DMG https://${FQDN}/Clash.Verge_latest_aarch64.dmg"
 echo "  • 校验值   https://${FQDN}/Clash.Verge_latest_aarch64.dmg.sha256"
-[ "${CF_LOCKDOWN}" -eq 1 ] && echo "  • 已启用仅 Cloudflare 访问（8071/443）。查看：ufw status"
+echo "  • 备用端口 https://${FQDN}:8471/"
 echo
