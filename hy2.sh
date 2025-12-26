@@ -37,6 +37,11 @@ ENABLE_FALLBACK="${ENABLE_FALLBACK:-1}"
 
 HTTP_PORT="${HTTP_PORT:-8080}"
 
+LOW_DISK_MB="${LOW_DISK_MB:-2048}"
+LOW_DISK_PATHS="${LOW_DISK_PATHS:-/ /var}"
+LOW_DISK_USE_PCT="${LOW_DISK_USE_PCT:-99}"
+LOW_INODE_AVAIL="${LOW_INODE_AVAIL:-128}"
+
 # 极限抗丢包默认开启（可通过环境变量关闭/调参）
 DISABLE_GRO_GSO="${DISABLE_GRO_GSO:-1}"      # 关闭聚合/分段（1=关闭），降低尾延迟与乱序
 ENABLE_TC_QDISC="${ENABLE_TC_QDISC:-2}"      # 开启 tc 队列（1=fq_codel，2=cake，3=fq pacing）
@@ -960,7 +965,7 @@ setup_auto_reboot_cron() {
 
   local DROP_CACHES="/proc/sys/vm/drop_caches"
   if [ ! -e "$DROP_CACHES" ]; then
-    echo "[WARN] 未找到 $DROP_CACHES，内存缓存清理可能无法执行"
+    echo "[WARN] 未找到 $DROP_CACHES，缓存清理可能无法执行"
   elif [ ! -w "$DROP_CACHES" ]; then
     echo "[WARN] 无法写入 $DROP_CACHES，请确保以 root 运行"
   fi
@@ -1047,14 +1052,25 @@ uninstall_snapd_safe() {
 }
 
 check_disk_and_uninstall_snapd() {
-  local avail
-  avail="$(df -Pm --output=avail / 2>/dev/null | tail -n 1 | tr -d " " || true)"
-  if [ -n "${avail:-}" ] && echo "$avail" | grep -Eq '^[0-9]+$' && [ "$avail" -lt 2048 ]; then
-    uninstall_snapd_safe
-  fi
+  local p avail use_pct iavail
+  for p in ${LOW_DISK_PATHS}; do
+    avail="$(df -Pm --output=avail "$p" 2>/dev/null | tail -n 1 | tr -d " " || true)"
+    use_pct="$(df -P "$p" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}' | tr -d " " || true)"
+    iavail="$(df -Pi "$p" 2>/dev/null | awk 'NR==2{print $4}' | tr -d " " || true)"
+    if { [ -n "${avail:-}" ] && echo "$avail" | grep -Eq '^[0-9]+$' && [ "$avail" -lt "${LOW_DISK_MB}" ]; } || \
+       { [ -n "${use_pct:-}" ] && echo "$use_pct" | grep -Eq '^[0-9]+$' && [ "$use_pct" -ge "${LOW_DISK_USE_PCT}" ]; } || \
+       { [ -n "${iavail:-}" ] && echo "$iavail" | grep -Eq '^[0-9]+$' && [ "$iavail" -lt "${LOW_INODE_AVAIL}" ]; }; then
+      uninstall_snapd_safe
+      return 0
+    fi
+  done
 }
 
 setup_low_disk_uninstall_systemd() {
+  local thr_disk="${LOW_DISK_MB}"
+  local paths="${LOW_DISK_PATHS}"
+  local thr_use="${LOW_DISK_USE_PCT}"
+  local thr_ino="${LOW_INODE_AVAIL}"
   cat >/etc/systemd/system/uninstall-snapd-low-disk.service <<'SVC'
 [Unit]
 Description=Uninstall snapd when low disk space
@@ -1062,7 +1078,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'avail=$(df -Pm --output=avail / 2>/dev/null | tail -n 1 | tr -d " " || true); if [ -n "${avail:-}" ] && [[ "$avail" =~ ^[0-9]+$ ]] && [ "$avail" -lt 2048 ]; then systemctl stop snapd >/dev/null 2>&1 || true; if command -v snap >/dev/null 2>&1; then snap list >/dev/null 2>&1 || true; snap remove lxd >/dev/null 2>&1 || true; snap remove core20 >/dev/null 2>&1 || true; snap remove snapd >/dev/null 2>&1 || true; snap remove core >/dev/null 2>&1 || true; fi; apt purge snapd -y >/dev/null 2>&1 || true; rm -rf /var/cache/snapd /var/lib/snapd /snap /var/snap /root/snap >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true; apt clean >/dev/null 2>&1 || true; if command -v journalctl >/dev/null 2>&1; then journalctl --vacuum-size=100M >/dev/null 2>&1 || true; fi; find /var/log -type f -exec truncate -s 0 {} \; >/dev/null 2>&1 || true; rm -rf /tmp/* >/dev/null 2>&1 || true; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf 2>/dev/null || true; fi'
+ExecStart=/bin/bash -c 'LOW_DISK_MB=LOW_DISK_MB_REPL; LOW_DISK_PATHS="LOW_DISK_PATHS_REPL"; LOW_DISK_USE_PCT=LOW_DISK_USE_PCT_REPL; LOW_INODE_AVAIL=LOW_INODE_AVAIL_REPL; triggered=0; picked_path=""; picked_avail=""; picked_use=""; picked_iav=""; reason=""; for p in $LOW_DISK_PATHS; do a=$(df -Pm --output=avail "$p" 2>/dev/null | tail -n 1 | tr -d " " || true); u=$(df -P "$p" 2>/dev/null | awk "NR==2{gsub(/%/,\"\",\$5); print \$5}" | tr -d " " || true); i=$(df -Pi "$p" 2>/dev/null | awk "NR==2{print \$4}" | tr -d " " || true); if [ -n "${a:-}" ] && [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -lt "$LOW_DISK_MB" ]; then triggered=1; reason="avail"; picked_path="$p"; picked_avail="$a"; picked_use="$u"; picked_iav="$i"; break; fi; if [ -n "${u:-}" ] && [[ "$u" =~ ^[0-9]+$ ]] && [ "$u" -ge "$LOW_DISK_USE_PCT" ]; then triggered=1; reason="use%"; picked_path="$p"; picked_avail="$a"; picked_use="$u"; picked_iav="$i"; break; fi; if [ -n "${i:-}" ] && [[ "$i" =~ ^[0-9]+$ ]] && [ "$i" -lt "$LOW_INODE_AVAIL" ]; then triggered=1; reason="inode"; picked_path="$p"; picked_avail="$a"; picked_use="$u"; picked_iav="$i"; break; fi; done; if [ "$triggered" -eq 1 ]; then echo "low-disk: reason=${reason} path=${picked_path} avail=${picked_avail:-NA}MB use=${picked_use:-NA}% iavail=${picked_iav:-NA} (trigger)"; systemctl stop snapd >/dev/null 2>&1 || true; if command -v snap >/dev/null 2>&1; then snap list >/dev/null 2>&1 || true; snap remove lxd >/dev/null 2>&1 || true; snap remove core20 >/dev/null 2>&1 || true; snap remove snapd >/dev/null 2>&1 || true; snap remove core >/dev/null 2>&1 || true; fi; apt purge snapd -y >/dev/null 2>&1 || true; rm -rf /var/cache/snapd /var/lib/snapd /snap /var/snap /root/snap >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true; apt clean >/dev/null 2>&1 || true; if command -v journalctl >/dev/null 2>&1; then journalctl --vacuum-size=100M >/dev/null 2>&1 || true; fi; find /var/log -type f -exec truncate -s 0 {} \; >/dev/null 2>&1 || true; rm -rf /tmp/* >/dev/null 2>&1 || true; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf 2>/dev/null || true; else echo "low-disk: paths=${LOW_DISK_PATHS} thr_avail=${LOW_DISK_MB}MB thr_use=${LOW_DISK_USE_PCT}% thr_iav=${LOW_INODE_AVAIL} (skip)"; fi'
 SVC
 
   cat >/etc/systemd/system/uninstall-snapd-now.service <<'SVC'
@@ -1085,8 +1101,13 @@ OnUnitActiveSec=10min
 Persistent=true
 
 [Install]
-WantedBy=timers.target
+  WantedBy=timers.target
 TIMER
+
+  sed -i "s/LOW_DISK_MB_REPL/${thr_disk}/g" /etc/systemd/system/uninstall-snapd-low-disk.service >/dev/null 2>&1 || true
+  sed -i "s@LOW_DISK_PATHS_REPL@$(escape_for_sed "$paths")@g" /etc/systemd/system/uninstall-snapd-low-disk.service >/dev/null 2>&1 || true
+  sed -i "s/LOW_DISK_USE_PCT_REPL/${thr_use}/g" /etc/systemd/system/uninstall-snapd-low-disk.service >/dev/null 2>&1 || true
+  sed -i "s/LOW_INODE_AVAIL_REPL/${thr_ino}/g" /etc/systemd/system/uninstall-snapd-low-disk.service >/dev/null 2>&1 || true
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
