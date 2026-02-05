@@ -4,7 +4,7 @@ set -euo pipefail
 ############################
 # 你的实际参数（已填入）
 ############################
-CF_API_TOKEN="mkLWPAjVenoiGuqbDPBl-amikcAa0sTrAn9SrsZP"                          # 仅 Zone:Read + DNS:Edit 权限（建议用环境变量传入）
+CF_API_TOKEN="zABB-0BT9zsNC6is9LNsGCE8IB5QsoJR5J4frUYw"                          # 仅 Zone:Read + DNS:Edit 权限（建议用环境变量传入）
 CF_ZONE_ID="7a825c1242fec406de06b79fcd9572d2"            # 该域名的 Zone ID（zhangcde.asia）
 ROOT_DOMAIN="zhangcde.asia"                               # 你的主域
 SUBDOMAIN="clash"                                            # 子域名（按你当前使用的 gs）
