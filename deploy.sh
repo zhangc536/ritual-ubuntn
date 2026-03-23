@@ -153,7 +153,7 @@ async function run() {
   console.log("✅ 上传成功");
 
   const res = await client.download({
-    signer: account,
+    account: account.accountAddress,
     blobName,
   });
 
@@ -161,7 +161,8 @@ async function run() {
     fs.mkdirSync("./downloads");
   }
 
-  fs.writeFileSync("./downloads/" + blobName, res);
+  const dataBuffer = Buffer.isBuffer(res) ? res : Buffer.from(JSON.stringify(res));
+  fs.writeFileSync("./downloads/" + blobName, dataBuffer);
 
   console.log("📥 下载完成:", blobName);
 }
