@@ -6,11 +6,11 @@ echo "=============================="
 
 PROJECT="shelby-auto"
 
-# ===== 1. 创建项目目录 =====
+echo ===== 1. 创建项目目录 =====
 mkdir -p $PROJECT
 cd $PROJECT
 
-# ===== 2. 检查 Node =====
+echo ===== 2. 检查 Node =====
 if ! command -v node &> /dev/null
 then
     echo "❌ 请先安装 Node.js"
@@ -19,10 +19,10 @@ fi
 
 echo "✅ Node: $(node -v)"
 
-# ===== 3. 初始化 npm =====
+echo ===== 3. 初始化 npm =====
 npm init -y > /dev/null 2>&1
 
-# ===== 4. 设置 ES Module =====
+echo ===== 4. 设置 ES Module =====
 node -e '
 const fs = require("fs");
 let pkg = JSON.parse(fs.readFileSync("package.json"));
@@ -30,13 +30,13 @@ pkg.type = "module";
 fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
 '
 
-# ===== 5. 安装依赖 =====
+echo ===== 5. 安装依赖 =====
 npm install @shelby-protocol/sdk @aptos-labs/ts-sdk > /dev/null 2>&1
 
-# ===== 6. 创建目录 =====
+echo ===== 6. 创建目录 =====
 mkdir -p data downloads
 
-# ===== 7. 生成钱包 =====
+echo ===== 7. 生成钱包 =====
 cat > gen_wallet.js <<EOF
 import { Account } from "@aptos-labs/ts-sdk";
 const acc = Account.generate();
@@ -49,7 +49,7 @@ INFO=$(node gen_wallet.js)
 ADDRESS=$(echo "$INFO" | grep ADDRESS | cut -d '=' -f2)
 PRIVATE_KEY=$(echo "$INFO" | grep PRIVATE_KEY | cut -d '=' -f2)
 
-# ===== 8. 保存钱包 =====
+echo ===== 8. 保存钱包 =====
 cat > wallet.txt <<EOF
 ==============================
 ⚠️ 保存好你的钱包
@@ -67,13 +67,14 @@ EOF
 
 echo "✅ 钱包生成: $ADDRESS"
 
-# ===== 9. 主程序 =====
+echo ===== 9. 主程序 =====
 cat > main.js <<EOF
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
-import { Account, Network } from "@aptos-labs/ts-sdk";
+import { Account, Network, Ed25519PrivateKey } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
-const account = Account.fromPrivateKey("$PRIVATE_KEY");
+const privateKey = new Ed25519PrivateKey("$PRIVATE_KEY");
+const account = Account.fromPrivateKey({ privateKey });
 
 const client = new ShelbyNodeClient({
   network: Network.TESTNET,
@@ -86,7 +87,7 @@ async function run() {
     fs.writeFileSync(file, "hello " + Date.now());
   }
 
-  const data = fs.readFileSync(file);
+  const data = new Uint8Array(fs.readFileSync(file));
   const blobName = "auto-" + Date.now() + ".txt";
 
   console.log("📤 上传:", blobName);
@@ -94,8 +95,8 @@ async function run() {
   await client.upload({
     signer: account,
     blobData: data,
-    blobName,
-    expirationSecs: 3600,
+    blobName: String(blobName),
+    expirationSecs: BigInt(3600),
   });
 
   console.log("✅ 上传成功");
@@ -113,7 +114,7 @@ async function run() {
 run();
 EOF
 
-# ===== 10. run.sh =====
+echo ===== 10. run.sh =====
 cat > run.sh <<EOF
 #!/bin/bash
 cd $(dirname "$0")
@@ -129,7 +130,7 @@ EOF
 
 chmod +x run.sh
 
-# ===== 11. start.sh =====
+echo ===== 11. start.sh =====
 cat > start.sh <<EOF
 #!/bin/bash
 cd \$(dirname "\$0")
@@ -150,7 +151,7 @@ EOF
 
 chmod +x start.sh
 
-# ===== 12. stop.sh =====
+echo ===== 12. stop.sh =====
 cat > stop.sh <<EOF
 #!/bin/bash
 
@@ -173,7 +174,7 @@ EOF
 
 chmod +x stop.sh
 
-# ===== 13. status.sh =====
+echo ===== 13. status.sh =====
 cat > status.sh <<EOF
 #!/bin/bash
 
@@ -193,7 +194,7 @@ EOF
 
 chmod +x status.sh
 
-# ===== 14. logs.sh =====
+echo ===== 14. logs.sh =====
 cat > logs.sh <<EOF
 #!/bin/bash
 tail -f shelby.log
@@ -201,10 +202,10 @@ EOF
 
 chmod +x logs.sh
 
-# ===== 15. 测试文件 =====
+echo ===== 15. 测试文件 =====
 echo "hello shelby $(date)" > data/test.txt
 
-# ===== 完成 =====
+echo ===== 完成 =====
 echo ""
 echo "=============================="
 echo "🎉 初始化完成"
