@@ -133,7 +133,7 @@ async function run() {
   console.log("📤 上传:", blobName);
 
   await client.upload({
-    account,
+    signer: account,
     blobData: data,
     blobName,
     expirationSecs: 3600,
