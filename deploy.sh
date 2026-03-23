@@ -117,9 +117,13 @@ const privateKey = new Ed25519PrivateKey(formatted);
 const account = Account.fromPrivateKey({ privateKey });
 
 const client = new ShelbyNodeClient({
-  fullnode: "https://api.shelby.xyz",
-  indexer: {
-    endpoint: "https://indexer.shelby.xyz",
+  clientConfig: {
+    fullnode: {
+      endpoint: "https://api.shelby.xyz",
+    },
+    indexer: {
+      endpoint: "https://indexer.shelby.xyz",
+    },
   },
 });
 
