@@ -108,7 +108,7 @@ echo "📌 步骤 9/15: 创建主程序 main.js"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cat > main.js <<EOF
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
-import { Account, PrivateKey, Aptos, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
+import { Account, PrivateKey, Aptos, AptosConfig, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
 const rawKey = "$PRIVATE_KEY_CLEAN";
@@ -120,9 +120,9 @@ const client = new ShelbyNodeClient({
   network: Network.TESTNET,
 });
 
-const aptos = new Aptos({
-  fullnode: "https://api.shelby.xyz",
-});
+const aptos = new Aptos(new AptosConfig({
+  network: Network.TESTNET,
+}));
 
 async function checkBalance(address) {
   try {
