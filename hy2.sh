@@ -21,10 +21,7 @@ HY2_PORT="${HY2_PORT:-443}"           # Hysteria2 UDP端口（默认 443，更�
 HY2_PORTS="${HY2_PORTS:-}"            # 多端口（逗号分隔，例如 8443,8444,8445）
 HY2_PORT_COUNT="${HY2_PORT_COUNT:-}"  # 端口数量（若未提供 HY2_PORTS，则按数量从主端口递增）
 HY2_PASS="${HY2_PASS:-}"              # HY2 密码（留空自动生成）
-OBFS_PASS="${OBFS_PASS:-}"            # 混淆密码（留空自动生成）
-DISABLE_OBFS="${DISABLE_OBFS:-1}"     # 关闭混淆（1=关闭，其余=开启）
 NAME_TAG="${NAME_TAG:-MyHysteria}"    # 节点名称
-PIN_SHA256="${PIN_SHA256:-}"          # 证书指纹（可留空）
 
 CLASH_WEB_DIR="${CLASH_WEB_DIR:-/etc/hysteria}"
 CLASH_OUT_PATH="${CLASH_OUT_PATH:-${CLASH_WEB_DIR}/clash_subscription.yaml}"
@@ -41,77 +38,6 @@ LOW_DISK_MB="${LOW_DISK_MB:-2048}"
 LOW_DISK_PATHS="${LOW_DISK_PATHS:-/ /var}"
 LOW_DISK_USE_PCT="${LOW_DISK_USE_PCT:-99}"
 LOW_INODE_AVAIL="${LOW_INODE_AVAIL:-128}"
-
-# 极限抗丢包默认开启（可通过环境变量关闭/调参）
-DISABLE_GRO_GSO="${DISABLE_GRO_GSO:-1}"      # 关闭聚合/分段（1=关闭），降低尾延迟与乱序
-ENABLE_TC_QDISC="${ENABLE_TC_QDISC:-2}"      # 开启 tc 队列（1=fq_codel，2=cake，3=fq pacing）
-TC_MAX_RATE="${TC_MAX_RATE:-}"               # 可选：限速，配合 fq_codel/cake（如 1000mbit）
-NOTRACK_UDP="${NOTRACK_UDP:-1}"              # 跳过 UDP conntrack（1=启用），降低高并发丢包
-CONNTRACK_MAX="${CONNTRACK_MAX:-1048576}"    # 可选：提高 conntrack 表大小（如 1048576）
-
-# 进一步优化：可选 DSCP 标记与队列参数、网卡环形缓冲
-ENABLE_DSCP="${ENABLE_DSCP:-0}"              # 为 UDP 流量标记 DSCP（仅本机出站有效）
-DSCP_OUT_CLASS="${DSCP_OUT_CLASS:-EF}"       # 出站标记的 DSCP 类（如 EF/CS7/AF31，也可数值）
-DSCP_IN_CLASS="${DSCP_IN_CLASS:-}"           # 可选：对入站包标记 DSCP（通常仅用于本机转发队列分类）
-TC_CAKE_DIFFSERV="${TC_CAKE_DIFFSERV:-diffserv3}"  # cake diffserv 模式（diffserv3/diffserv4/diffserv8）
-TC_CAKE_OPTS="${TC_CAKE_OPTS:-}"             # 额外 cake 参数（例如 nat）
-TC_FQ_CODEL_OPTS="${TC_FQ_CODEL_OPTS:-}"     # 额外 fq_codel 参数（例如 flows 1024）
-SET_NIC_RING="${SET_NIC_RING:-0}"            # 调整网卡环形缓冲（1=启用）
-RX_RING="${RX_RING:-4096}"                   # RX 环形缓冲目标值
-TX_RING="${TX_RING:-4096}"                   # TX 环形缓冲目标值
-
-# 运行时网络调优参数（可覆盖默认值）
-NET_RMEM_MAX="${NET_RMEM_MAX:-33554432}"
-NET_WMEM_MAX="${NET_WMEM_MAX:-33554432}"
-NET_RMEM_DEF="${NET_RMEM_DEF:-262144}"
-NET_WMEM_DEF="${NET_WMEM_DEF:-262144}"
-NET_BACKLOG="${NET_BACKLOG:-250000}"
-UDP_RMEM_MIN="${UDP_RMEM_MIN:-16384}"
-UDP_WMEM_MIN="${UDP_WMEM_MIN:-16384}"
-DEFAULT_QDISC="${DEFAULT_QDISC:-fq}"
-
-# TCP 拥塞/ECN 与 Hysteria Brutal 可选项
-ENABLE_TCP_TUNE="${ENABLE_TCP_TUNE:-1}"         # 启用 TCP 拥塞与 ECN 调优
-TCP_CONG_ALGO="${TCP_CONG_ALGO:-bbr}"           # TCP 拥塞算法（bbr/cubic 等；bbr 将随内核版本使用 v2/v3）
-ENABLE_ECN="${ENABLE_ECN:-1}"                    # 启用 ECN（1=开启）
-TCP_ECN_FALLBACK="${TCP_ECN_FALLBACK:-1}"        # ECN 黑洞回退（若内核支持）
-
-# Hysteria Brutal 通过带宽字段触发；单位支持 bps/kbps/mbps/gbps/tbps
-HY2_BW_UP="${HY2_BW_UP:-}"                       # 服务器上行（客户端下行）
-HY2_BW_DOWN="${HY2_BW_DOWN:-}"                   # 服务器下行（客户端上行）
-IGNORE_CLIENT_BW="${IGNORE_CLIENT_BW:-0}"        # 服务器忽略客户端带宽（1=忽略，强制使用 BBR）
-
-# 低延迟相关：Busy Poll 与网卡中断合并（可选）
-ENABLE_BUSY_POLL="${ENABLE_BUSY_POLL:-1}"     # 启用忙轮询/预算调优（提升低延迟，增 CPU）
-NET_BUSY_POLL="${NET_BUSY_POLL:-50}"          # 微秒
-NET_BUSY_READ="${NET_BUSY_READ:-50}"          # 微秒
-NETDEV_BUDGET_USECS="${NETDEV_BUDGET_USECS:-80}" # NAPI 每轮最大耗时微秒
-NETDEV_BUDGET="${NETDEV_BUDGET:-300}"         # NAPI 一轮最大包数预算
-DEV_WEIGHT="${DEV_WEIGHT:-64}"                 # 设备权重（每轮处理包数的基线）
-SET_NIC_COALESCE="${SET_NIC_COALESCE:-0}"      # 启用网卡中断合并（1=启用）
-RX_COALESCE_USECS="${RX_COALESCE_USECS:-16}"   # RX 中断合并微秒
-TX_COALESCE_USECS="${TX_COALESCE_USECS:-16}"   # TX 中断合并微秒
-
-# 持久化与 NIC/RPS/Policing 相关可选开关
-ENABLE_PERSIST_SYSCTL="${ENABLE_PERSIST_SYSCTL:-1}"   # 持久化写入 sysctl（提升 UDP 缓冲，重启仍生效）
-SYSCTL_PERSIST_FILE="${SYSCTL_PERSIST_FILE:-/etc/sysctl.d/99-hy2-tune.conf}"
-
-SET_IRQ_AFFINITY="${SET_IRQ_AFFINITY:-1}"            # 设置 NIC IRQ 亲和性分散至多核
-DISABLE_IRQBALANCE="${DISABLE_IRQBALANCE:-0}"         # 可选：停止 irqbalance 以使用手动 affinity
-IRQ_MATCH_HINT="${IRQ_MATCH_HINT:-}"                  # 可选：/proc/interrupts 额外匹配提示（如 virtio|ena|ixgbe）
-
-SET_RPS="${SET_RPS:-1}"                              # 启用 RPS（接收包在多核上调度）
-RPS_FLOW_CNT="${RPS_FLOW_CNT:-8192}"                 # 每队列 RPS flow 数量
-RPS_CPUS_MASK="${RPS_CPUS_MASK:-}"                   # 可选：指定十六进制 CPU 掩码（默认自动计算）
-
-SET_NIC_CHANNELS="${SET_NIC_CHANNELS:-0}"            # 配置网卡多队列（ethtool -L）
-NIC_RX_CHANNELS="${NIC_RX_CHANNELS:-}"               # RX 队列数（可选）
-NIC_TX_CHANNELS="${NIC_TX_CHANNELS:-}"               # TX 队列数（可选）
-NIC_COMBINED_CHANNELS="${NIC_COMBINED_CHANNELS:-}"   # 合并队列数（优先）
-
-ENABLE_INGRESS_POLICING="${ENABLE_INGRESS_POLICING:-0}"  # 启用 ingress policing（限突发）
-INGRESS_RATE="${INGRESS_RATE:-}"                         # 速率（如 1000mbit；默认取 TC_MAX_RATE）
-INGRESS_BURST="${INGRESS_BURST:-64k}"                    # 突发大小（如 64k）
 
 # ---- helper: escape replacement for sed (escape & and / and @ and newline) ----
 escape_for_sed() {
@@ -180,28 +106,21 @@ parse_port_list() {
 gen_credentials_for_ports() {
   local list_csv="$1"
   declare -gA PASS_MAP
-  declare -gA OBFS_MAP
   IFS=',' read -r -a ports <<<"$list_csv"
   for pt in "${ports[@]}"; do
-    local pass obfs
+    local pass
     if [ "$pt" = "$HY2_PORT" ] && [ -n "${HY2_PASS:-}" ]; then
       pass="$HY2_PASS"
     else
       pass="$(openssl rand -hex 16)"
     fi
-    if [ "$pt" = "$HY2_PORT" ] && [ -n "${OBFS_PASS:-}" ]; then
-      obfs="$OBFS_PASS"
-    else
-      obfs="$(openssl rand -hex 8)"
-    fi
     PASS_MAP[$pt]="$pass"
-    OBFS_MAP[$pt]="$obfs"
   done
 }
 
 # ---- helper: 写单端口 hysteria 配置到 /etc/hysteria/config-<port>.yaml ----
 write_hysteria_config_for_port() {
-  local port="$1"; local pass="$2"; local obfsp="$3"; local use_tls="$4"
+  local port="$1"; local pass="$2"; local use_tls="$3"
   mkdir -p /etc/hysteria
   cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
@@ -211,25 +130,6 @@ auth:
   type: password
   password: ${pass}
 EOF
-  # Brutal 通过带宽字段触发（如未设置则保持使用 BBR）
-  if [ -n "${HY2_BW_UP:-}" ] || [ -n "${HY2_BW_DOWN:-}" ]; then
-    {
-      echo "bandwidth:"
-      [ -n "${HY2_BW_UP:-}" ] && echo "  up: ${HY2_BW_UP}"
-      [ -n "${HY2_BW_DOWN:-}" ] && echo "  down: ${HY2_BW_DOWN}"
-    } >>"/etc/hysteria/config-${port}.yaml"
-  fi
-  if [ "${IGNORE_CLIENT_BW}" = "1" ]; then
-    echo "ignoreClientBandwidth: true" >>"/etc/hysteria/config-${port}.yaml"
-  fi
-  if [ "${DISABLE_OBFS}" != "1" ]; then
-    cat >>"/etc/hysteria/config-${port}.yaml" <<EOF
-obfs:
-  type: salamander
-  salamander:
-    password: ${obfsp}
-EOF
-  fi
   cat >>"/etc/hysteria/config-${port}.yaml" <<EOF
 tls:
   cert: ${USE_CERT_PATH}
@@ -249,25 +149,6 @@ auth:
   type: password
   password: ${HY2_PASS}
 EOF
-  # Brutal 通过带宽字段触发（如未设置则保持使用 BBR）
-  if [ -n "${HY2_BW_UP:-}" ] || [ -n "${HY2_BW_DOWN:-}" ]; then
-    {
-      echo "bandwidth:"
-      [ -n "${HY2_BW_UP:-}" ] && echo "  up: ${HY2_BW_UP}"
-      [ -n "${HY2_BW_DOWN:-}" ] && echo "  down: ${HY2_BW_DOWN}"
-    } >>/etc/hysteria/config.yaml
-  fi
-  if [ "${IGNORE_CLIENT_BW}" = "1" ]; then
-    echo "ignoreClientBandwidth: true" >>/etc/hysteria/config.yaml
-  fi
-  if [ "${DISABLE_OBFS}" != "1" ]; then
-    cat >>/etc/hysteria/config.yaml <<EOF
-obfs:
-  type: salamander
-  salamander:
-    password: ${OBFS_PASS}
-EOF
-  fi
   cat >>/etc/hysteria/config.yaml <<EOF
 tls:
   cert: ${USE_CERT_PATH}
@@ -282,10 +163,9 @@ start_additional_instances_with_tls() {
   IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
   for pt in "${ports_all[@]}"; do
     [ "$pt" = "$HY2_PORT" ] && continue
-    write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "${OBFS_MAP[$pt]}" "1"
+    write_hysteria_config_for_port "$pt" "${PASS_MAP[$pt]}" "1"
     start_hysteria_instance "$pt"
   done
-  ensure_udp_ports_open "$PORT_LIST_CSV"
 }
 
 # ---- helper: systemd 模板服务（@）确保存在 ----
@@ -323,46 +203,6 @@ start_hysteria_instance() {
     fi
   else
     start_port_service_direct "$port"
-  fi
-}
-
-# ---- helper: 开放 UDP 端口（firewalld 或 ufw 若存在） ----
-ensure_udp_ports_open() {
-  local list_csv="$1"
-  local opened=0
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    local changed=0
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      firewall-cmd --query-port="${pt}/udp" >/dev/null 2>&1 || { firewall-cmd --add-port="${pt}/udp" --permanent >/dev/null 2>&1 && changed=1; }
-    done
-    if [ "$changed" -eq 1 ]; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
-    echo "[OK] firewalld 已放行指定 UDP 端口"
-    opened=1
-  elif command -v ufw >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      ufw status 2>/dev/null | grep -q "${pt}/udp" || ufw allow "${pt}/udp" >/dev/null 2>&1 || true
-    done
-    echo "[OK] ufw 已放行指定 UDP 端口"
-    opened=1
-  elif command -v iptables >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      iptables -C INPUT -p udp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p udp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || true
-    done
-    echo "[OK] iptables 已放行指定 UDP 端口"
-    opened=1
-  elif command -v nft >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      nft add rule inet filter input udp dport "$pt" accept >/dev/null 2>&1 || true
-    done
-    echo "[OK] nftables 已尝试放行指定 UDP 端口"
-    opened=1
-  fi
-  if [ "$opened" -eq 0 ]; then
-    echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 UDP 端口。"
   fi
 }
 
@@ -411,46 +251,6 @@ start_port_service_direct() {
   sleep 1
 }
 
-# ---- helper: 开放 TCP 端口（按需） ----
-ensure_tcp_port_open() {
-  local list_csv="$1"
-  local opened=0
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    local changed=0
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      firewall-cmd --query-port="${pt}/tcp" >/dev/null 2>&1 || { firewall-cmd --add-port="${pt}/tcp" --permanent >/dev/null 2>&1 && changed=1; }
-    done
-    if [ "$changed" -eq 1 ]; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
-    echo "[OK] firewalld 已放行指定 TCP 端口"
-    opened=1
-  elif command -v ufw >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      ufw status 2>/dev/null | grep -q "${pt}/tcp" || ufw allow "${pt}/tcp" >/dev/null 2>&1 || true
-    done
-    echo "[OK] ufw 已放行指定 TCP 端口"
-    opened=1
-  elif command -v iptables >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      iptables -C INPUT -p tcp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p tcp --dport "$pt" -j ACCEPT >/dev/null 2>&1 || true
-    done
-    echo "[OK] iptables 已放行指定 TCP 端口"
-    opened=1
-  elif command -v nft >/dev/null 2>&1; then
-    IFS=',' read -r -a ports <<<"$list_csv"
-    for pt in "${ports[@]}"; do
-      nft add rule inet filter input tcp dport "$pt" accept >/dev/null 2>&1 || true
-    done
-    echo "[OK] nftables 已尝试放行指定 TCP 端口"
-    opened=1
-  fi
-  if [ "$opened" -eq 0 ]; then
-    echo "[WARN] 未检测到 firewalld/ufw；若存在其他防火墙或云安全组，请手动放行 TCP 端口。"
-  fi
-}
-
 # ---- helper: 兼容占位：80 端口可用性检查（已移除 ACME 相关逻辑） ----
 STOPPED_NGINX=0
 STOPPED_APACHE=0
@@ -485,398 +285,21 @@ try_import_from_traefik_acme_json() { return 1; }
 # ---- helper: 使用 ACME 缓存目录启动额外端口（已移除） ----
 start_additional_instances_with_acme_cache() { return 0; }
 
-# ---- helper: 运行时网络调优（仅当前会话，非持久化） ----
-apply_runtime_net_tuning() {
-  if [ "${ENABLE_NET_TUNE:-1}" != "1" ]; then
-    echo "[INFO] 网络调优已禁用（ENABLE_NET_TUNE=0）"
-    return 0
-  fi
-  # 提升 UDP 缓冲与排队，启用低抖动队列
-  sysctl -w net.core.rmem_max="${NET_RMEM_MAX}" >/dev/null 2>&1 || true
-  sysctl -w net.core.wmem_max="${NET_WMEM_MAX}" >/dev/null 2>&1 || true
-  sysctl -w net.core.rmem_default="${NET_RMEM_DEF}" >/dev/null 2>&1 || true
-  sysctl -w net.core.wmem_default="${NET_WMEM_DEF}" >/dev/null 2>&1 || true
-  sysctl -w net.core.netdev_max_backlog="${NET_BACKLOG}" >/dev/null 2>&1 || true
-  sysctl -w net.core.default_qdisc="${DEFAULT_QDISC}" >/dev/null 2>&1 || true
-  sysctl -w net.ipv4.udp_rmem_min="${UDP_RMEM_MIN}" >/dev/null 2>&1 || true
-  sysctl -w net.ipv4.udp_wmem_min="${UDP_WMEM_MIN}" >/dev/null 2>&1 || true
-  # 可选：提高 conntrack 表大小，缓解高并发爆表
-  sysctl -w net.netfilter.nf_conntrack_max="${CONNTRACK_MAX}" >/dev/null 2>&1 || true
-
-  # TCP 拥塞控制与 ECN（配合 fq pacing 提升尾延迟表现）
-  if [ "${ENABLE_TCP_TUNE}" = "1" ]; then
-    sysctl -w net.ipv4.tcp_congestion_control="${TCP_CONG_ALGO}" >/dev/null 2>&1 || true
-    if [ "${ENABLE_ECN}" = "1" ]; then
-      sysctl -w net.ipv4.tcp_ecn=1 >/dev/null 2>&1 || true
-      sysctl -w net.ipv4.tcp_ecn_fallback="${TCP_ECN_FALLBACK}" >/dev/null 2>&1 || true
-      echo "[OK] 已启用 TCP 拥塞=${TCP_CONG_ALGO} 与 ECN（fallback=${TCP_ECN_FALLBACK}）"
-    else
-      echo "[INFO] ECN 已禁用（ENABLE_ECN=0）"
-    fi
-  else
-    echo "[INFO] TCP 拥塞/ECN 调优已禁用（ENABLE_TCP_TUNE=0）"
-  fi
-
-  # 低延迟：忙轮询与 NAPI 预算（风险：增 CPU 占用）
-  if [ "${ENABLE_BUSY_POLL}" = "1" ]; then
-    sysctl -w net.core.busy_poll="${NET_BUSY_POLL}" >/dev/null 2>&1 || true
-    sysctl -w net.core.busy_read="${NET_BUSY_READ}" >/dev/null 2>&1 || true
-    sysctl -w net.core.netdev_budget_usecs="${NETDEV_BUDGET_USECS}" >/dev/null 2>&1 || true
-    sysctl -w net.core.netdev_budget="${NETDEV_BUDGET}" >/dev/null 2>&1 || true
-    sysctl -w net.core.dev_weight="${DEV_WEIGHT}" >/dev/null 2>&1 || true
-    echo "[OK] 已启用 Busy Poll/预算调优：busy_poll=${NET_BUSY_POLL}us busy_read=${NET_BUSY_READ}us budget_usecs=${NETDEV_BUDGET_USECS} budget=${NETDEV_BUDGET} dev_weight=${DEV_WEIGHT}"
-  else
-    echo "[INFO] Busy Poll 已禁用（ENABLE_BUSY_POLL=0）"
-  fi
-  # 持久化写入 sysctl，确保重启后仍生效
-  ensure_persistent_sysctl_tuning
-  echo "[OK] 已应用运行时网络调优参数并完成持久化"
-}
-
-# ---- helper: 写入持久化 sysctl 调优到 /etc/sysctl.d ----
-ensure_persistent_sysctl_tuning() {
-  if [ "${ENABLE_PERSIST_SYSCTL}" != "1" ]; then
-    echo "[INFO] 已跳过持久化 sysctl（ENABLE_PERSIST_SYSCTL=0）"
-    return 0
-  fi
-  local f="${SYSCTL_PERSIST_FILE}"
-  mkdir -p "$(dirname "$f")"
-  # 若存在旧文件，先备份，便于回滚与审计
-  if [ -f "$f" ]; then
-    local ts
-    ts="$(date +%s 2>/dev/null || echo 0)"
-    cp -a "$f" "$f.bak.$ts" 2>/dev/null || cp "$f" "$f.bak.$ts" 2>/dev/null || true
-    echo "[INFO] 已备份原 sysctl 文件为: $f.bak.$ts"
-  fi
-  cat >"$f" <<EOF
-# hy2.sh 持久化网络调优（自动生成）
-net.core.rmem_max=${NET_RMEM_MAX}
-net.core.wmem_max=${NET_WMEM_MAX}
-net.core.rmem_default=${NET_RMEM_DEF}
-net.core.wmem_default=${NET_WMEM_DEF}
-net.core.netdev_max_backlog=${NET_BACKLOG}
-net.ipv4.udp_rmem_min=${UDP_RMEM_MIN}
-net.ipv4.udp_wmem_min=${UDP_WMEM_MIN}
-net.core.default_qdisc=${DEFAULT_QDISC}
-net.netfilter.nf_conntrack_max=${CONNTRACK_MAX}
-net.ipv4.tcp_congestion_control=${TCP_CONG_ALGO}
-net.ipv4.tcp_ecn=$([ "${ENABLE_ECN}" = "1" ] && echo 1 || echo 0)
-net.ipv4.tcp_ecn_fallback=${TCP_ECN_FALLBACK}
-EOF
-  # 尝试加载该文件；失败则退回加载系统全部
-  sysctl -p "$f" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
-  echo "[OK] 已写入持久化 sysctl 调优（$f）"
-}
-
-# ---- helper: 检测默认出口网卡 ----
-detect_main_iface() {
-  local iface=""
-  if command -v ip >/dev/null 2>&1; then
-    iface="$(ip route get 1 2>/dev/null | awk '/dev/ {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
-  fi
-  echo "${iface}"
-}
-
-# ---- helper: DSCP 名称到数值的简易映射（常见类）。返回空表示未知。----
-dscp_to_value() {
-  local cls="$1"
-  case "$cls" in
-    EF|ef) echo 46 ;;
-    CS0|cs0) echo 0 ;;
-    CS1|cs1) echo 8 ;;
-    CS2|cs2) echo 16 ;;
-    CS3|cs3) echo 24 ;;
-    CS4|cs4) echo 32 ;;
-    CS5|cs5) echo 40 ;;
-    CS6|cs6) echo 48 ;;
-    CS7|cs7) echo 56 ;;
-    AF11|af11) echo 10 ;;
-    AF12|af12) echo 12 ;;
-    AF13|af13) echo 14 ;;
-    AF21|af21) echo 18 ;;
-    AF22|af22) echo 20 ;;
-    AF23|af23) echo 22 ;;
-    AF31|af31) echo 26 ;;
-    AF32|af32) echo 28 ;;
-    AF33|af33) echo 30 ;;
-    AF41|af41) echo 34 ;;
-    AF42|af42) echo 36 ;;
-    AF43|af43) echo 38 ;;
-    * )
-      # 如果是纯数字则直接返回
-      if printf '%s' "$cls" | grep -Eq '^[0-9]+$'; then
-        echo "$cls"
-      else
-        echo "" # 未知
-      fi
-      ;;
-  esac
-}
-
-# ---- helper: 极限抗丢包（可选，默认关闭） ----
-apply_extreme_loss_mitigation() {
-  local iface="$(detect_main_iface)"
-  [ -z "$iface" ] && echo "[WARN] 未能检测到主网卡，跳过极限抗丢包步骤" && return 0
-  # 兜底：确保端口列表已定义，便于独立调用本函数
-  PORT_LIST_CSV="${PORT_LIST_CSV:-$(parse_port_list)}"
-
-  # 1) 可选关闭 GRO/GSO（减少聚合与乱序导致的尾延迟/重传）
-  if [ "${DISABLE_GRO_GSO}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
-    ethtool -K "$iface" gro off gso off >/dev/null 2>&1 || true
-    echo "[OK] 已关闭 $iface 的 GRO/GSO"
-  fi
-
-  # 2) 可选应用 tc 队列控制（抗 bufferbloat）
-  if [ "${ENABLE_TC_QDISC}" != "0" ] && command -v tc >/dev/null 2>&1; then
-    if [ "${ENABLE_TC_QDISC}" = "2" ]; then
-      # cake 更智能（若内核/模块支持），可选带宽参数
-      if tc qdisc replace dev "$iface" root cake ${TC_MAX_RATE:+bandwidth $TC_MAX_RATE} ${TC_CAKE_DIFFSERV:+$TC_CAKE_DIFFSERV} ${TC_CAKE_OPTS} >/dev/null 2>&1; then
-        echo "[OK] 已在 $iface 应用 cake qdisc${TC_MAX_RATE:+（带宽 $TC_MAX_RATE）}${TC_CAKE_DIFFSERV:+，$TC_CAKE_DIFFSERV}${TC_CAKE_OPTS:+，$TC_CAKE_OPTS}"
-      else
-        echo "[WARN] cake 不可用，尝试 fq_codel"
-        tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
-        echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
-      fi
-    elif [ "${ENABLE_TC_QDISC}" = "3" ]; then
-      # 直接使用 fq pacing（配合 BBR 更佳）
-      tc qdisc replace dev "$iface" root fq >/dev/null 2>&1 || true
-      echo "[OK] 已在 $iface 应用 fq（pacing）"
-    else
-      tc qdisc replace dev "$iface" root fq_codel ${TC_FQ_CODEL_OPTS} >/dev/null 2>&1 || true
-      echo "[OK] 已在 $iface 应用 fq_codel${TC_FQ_CODEL_OPTS:+（$TC_FQ_CODEL_OPTS）}"
-    fi
-  fi
-
-  # 3) 可选跳过 UDP conntrack（降低 nf_conntrack 开销与爆表导致的丢包）
-  if [ "${NOTRACK_UDP}" = "1" ]; then
-    local ports_csv="$PORT_LIST_CSV"
-    IFS=',' read -r -a ports <<<"$ports_csv"
-    if command -v iptables >/dev/null 2>&1; then
-      for pt in "${ports[@]}"; do
-        iptables -t raw -C PREROUTING -p udp --dport "$pt" -j NOTRACK >/dev/null 2>&1 || iptables -t raw -I PREROUTING -p udp --dport "$pt" -j NOTRACK >/dev/null 2>&1 || true
-        iptables -t raw -C OUTPUT -p udp --sport "$pt" -j NOTRACK >/dev/null 2>&1 || iptables -t raw -I OUTPUT -p udp --sport "$pt" -j NOTRACK >/dev/null 2>&1 || true
-      done
-      echo "[OK] iptables raw NOTRACK 已应用于 UDP 端口"
-    elif command -v nft >/dev/null 2>&1; then
-      # 确保 inet raw 表与链存在（优先 notrack 钩子）
-      nft list table inet raw >/dev/null 2>&1 || nft add table inet raw >/dev/null 2>&1 || true
-    nft list chain inet raw prerouting >/dev/null 2>&1 || nft add chain inet raw prerouting '{ type filter hook prerouting priority -300; }' >/dev/null 2>&1 || true
-    nft list chain inet raw output >/dev/null 2>&1 || nft add chain inet raw output '{ type filter hook output priority -300; }' >/dev/null 2>&1 || true
-      for pt in "${ports[@]}"; do
-        nft add rule inet raw prerouting udp dport "$pt" notrack >/dev/null 2>&1 || true
-        nft add rule inet raw output udp sport "$pt" notrack >/dev/null 2>&1 || true
-      done
-      echo "[OK] nftables raw notrack 已应用于 UDP 端口"
-    else
-      echo "[WARN] 未找到 iptables/nft，无法应用 notrack"
-    fi
-  fi
-
-  # 4) 可选提高 conntrack 表上限（在未启用 notrack 时降低爆表掉包）
-  if [ -n "${CONNTRACK_MAX}" ]; then
-    sysctl -w net.netfilter.nf_conntrack_max="${CONNTRACK_MAX}" >/dev/null 2>&1 || true
-    echo "[OK] 已设置 nf_conntrack_max=${CONNTRACK_MAX}"
-  fi
-
-  # 5) 可选 DSCP 流量标记（用于 egress 队列分类与优先级）
-  if [ "${ENABLE_DSCP}" = "1" ]; then
-    local ports_csv="$PORT_LIST_CSV"
-    IFS=',' read -r -a ports <<<"$ports_csv"
-    if command -v iptables >/dev/null 2>&1; then
-      for pt in "${ports[@]}"; do
-        # 出站包：源端口为服务端端口
-        local _outv; _outv="$(dscp_to_value "$DSCP_OUT_CLASS")"
-        if [ -n "$_outv" ]; then
-          iptables -t mangle -C POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp "$_outv" >/dev/null 2>&1 || \
-          iptables -t mangle -A POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp "$_outv" >/dev/null 2>&1 || true
-        else
-          iptables -t mangle -C POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp-class "$DSCP_OUT_CLASS" >/dev/null 2>&1 || \
-          iptables -t mangle -A POSTROUTING -p udp --sport "$pt" -j DSCP --set-dscp-class "$DSCP_OUT_CLASS" >/dev/null 2>&1 || true
-        fi
-        # 入站包（可选）：目标端口为服务端端口
-        if [ -n "${DSCP_IN_CLASS}" ]; then
-          local _inv; _inv="$(dscp_to_value "$DSCP_IN_CLASS")"
-          if [ -n "$_inv" ]; then
-            iptables -t mangle -C PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp "$_inv" >/dev/null 2>&1 || \
-            iptables -t mangle -A PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp "$_inv" >/dev/null 2>&1 || true
-          else
-            iptables -t mangle -C PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp-class "$DSCP_IN_CLASS" >/dev/null 2>&1 || \
-            iptables -t mangle -A PREROUTING -p udp --dport "$pt" -j DSCP --set-dscp-class "$DSCP_IN_CLASS" >/dev/null 2>&1 || true
-          fi
-        fi
-      done
-      echo "[OK] 已应用 DSCP 标记（iptables mangle）：出站 ${DSCP_OUT_CLASS}${DSCP_IN_CLASS:+，入站 $DSCP_IN_CLASS}"
-    elif command -v nft >/dev/null 2>&1; then
-      for pt in "${ports[@]}"; do
-        local _outv; _outv="$(dscp_to_value "$DSCP_OUT_CLASS")"
-        if [ -n "$_outv" ]; then
-          nft add rule inet mangle postrouting udp sport "$pt" dscp set "$_outv" >/dev/null 2>&1 || true
-        else
-          echo "[WARN] DSCP_OUT_CLASS=${DSCP_OUT_CLASS} 未识别，nft 需数值，已跳过设置"
-        fi
-        if [ -n "${DSCP_IN_CLASS}" ]; then
-          local _inv; _inv="$(dscp_to_value "$DSCP_IN_CLASS")"
-          if [ -n "$_inv" ]; then
-            nft add rule inet mangle prerouting udp dport "$pt" dscp set "$_inv" >/dev/null 2>&1 || true
-          else
-            echo "[WARN] DSCP_IN_CLASS=${DSCP_IN_CLASS} 未识别，nft 需数值，已跳过设置"
-          fi
-        fi
-      done
-      echo "[OK] 已应用 DSCP 标记（nftables mangle）：出站 ${DSCP_OUT_CLASS}${DSCP_IN_CLASS:+，入站 $DSCP_IN_CLASS}"
-    else
-      echo "[WARN] 未找到 iptables/nft，无法应用 DSCP 标记"
-    fi
-  fi
-
-  # 6) 可选调整网卡环形缓冲（提升在高并发下的吞吐与抗丢包）
-  if [ "${SET_NIC_RING}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
-    ethtool -G "$iface" rx "$RX_RING" tx "$TX_RING" >/dev/null 2>&1 || true
-    echo "[OK] 已设置 $iface 环形缓冲：RX=$RX_RING TX=$TX_RING"
-  fi
-
-  # 7) 可选调整网卡中断合并（降低中断风暴，兼顾延迟）
-  if [ "${SET_NIC_COALESCE}" = "1" ] && command -v ethtool >/dev/null 2>&1; then
-    ethtool -C "$iface" rx-usecs "$RX_COALESCE_USECS" tx-usecs "$TX_COALESCE_USECS" >/dev/null 2>&1 || true
-    echo "[OK] 已设置 $iface 中断合并：rx-usecs=$RX_COALESCE_USECS tx-usecs=$TX_COALESCE_USECS"
-  fi
-
-  # 8) NIC 多队列 + IRQ affinity + RPS（提高 PPS 能力）
-  apply_nic_channels_for_iface "$iface"
-  apply_irq_affinity_for_iface "$iface"
-  apply_rps_tuning_for_iface "$iface"
-
-  # 9) ingress policing（控制突发，需提供速率）
-  apply_ingress_policing_for_iface "$iface"
-}
-
-# ---- helper: 配置网卡多队列（ethtool -L） ----
-apply_nic_channels_for_iface() {
-  local iface="$1"
-  [ "${SET_NIC_CHANNELS}" = "1" ] || return 0
-  command -v ethtool >/dev/null 2>&1 || { echo "[WARN] 缺少 ethtool，跳过 NIC 多队列"; return 0; }
-  if [ -n "${NIC_COMBINED_CHANNELS}" ]; then
-    ethtool -L "$iface" combined "${NIC_COMBINED_CHANNELS}" >/dev/null 2>&1 || echo "[WARN] 设置 combined 队列失败；可能不支持"
-  else
-    [ -n "${NIC_RX_CHANNELS}" ] && ethtool -L "$iface" rx "${NIC_RX_CHANNELS}" >/dev/null 2>&1 || true
-    [ -n "${NIC_TX_CHANNELS}" ] && ethtool -L "$iface" tx "${NIC_TX_CHANNELS}" >/dev/null 2>&1 || true
-  fi
-  echo "[OK] 已尝试配置 $iface 的多队列（ethtool -L；虚拟 NIC 可能被宿主机限制）"
-}
-
-# ---- helper: 分散 NIC 中断到多核（IRQ affinity） ----
-apply_irq_affinity_for_iface() {
-  local iface="$1"
-  [ "${SET_IRQ_AFFINITY}" = "1" ] || return 0
-  # 可选停止 irqbalance，避免其覆盖手动 affinity
-  if [ "${DISABLE_IRQBALANCE}" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-    local active enabled
-    active="$(systemctl is-active irqbalance 2>/dev/null || echo unknown)"
-    enabled="$(systemctl is-enabled irqbalance 2>/dev/null || echo unknown)"
-    systemctl stop irqbalance >/dev/null 2>&1 || true
-    systemctl disable irqbalance >/dev/null 2>&1 || true
-    echo "[INFO] 已停用 irqbalance（active=${active}, enabled=${enabled}）——请在测试结束后决定是否重新启用"
-  fi
-  local ncpu
-  if command -v nproc >/dev/null 2>&1; then ncpu="$(nproc)"; else ncpu="$(grep -cE '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"; fi
-  [ -z "$ncpu" ] && ncpu=1
-  # 更健壮地获取 IRQ：优先从 sysfs，其次从 /proc/interrupts（匹配接口名或驱动名）
-  # 变量默认值，避免在 set -u 下出现未绑定错误
-  local irqs="" driver=""
-  # 1) sysfs MSI-X 列表（最可靠）
-  if [ -d "/sys/class/net/$iface/device/msi_irqs" ]; then
-    irqs="$(ls -1 "/sys/class/net/$iface/device/msi_irqs" 2>/dev/null | tr '\n' ' ')"
-  fi
-  # 2) 单 IRQ 文件回退
-  if [ -z "${irqs:-}" ] && [ -f "/sys/class/net/$iface/device/irq" ]; then
-    irqs="$(cat "/sys/class/net/$iface/device/irq" 2>/dev/null)"
-  fi
-  # 3) /proc/interrupts：匹配接口名或驱动名（virtio/ena/ixgbe 等常见驱动名）
-  if [ -z "${irqs:-}" ]; then
-    if command -v ethtool >/dev/null 2>&1; then
-      driver="$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/ {print $2}')"
-    fi
-    # 构造更宽松的匹配模式
-    local pat
-    if [ -n "${IRQ_MATCH_HINT:-}" ]; then
-      pat="${IRQ_MATCH_HINT}"
-    else
-      pat="${iface}"
-      [ -n "${driver:-}" ] && pat="${pat}|${driver}"
-      case "${driver:-}" in
-        *virtio*) pat="${pat}|virtio" ;;
-        *ena*) pat="${pat}|ena" ;;
-        *ixgbe*) pat="${pat}|ixgbe" ;;
-      esac
-    fi
-    irqs="$(grep -iE "$pat" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':')"
-    [ -n "${pat:-}" ] && echo "[INFO] /proc/interrupts 匹配模式：$pat" || true
-  fi
-  if [ -z "${irqs:-}" ]; then
-    echo "[WARN] 未找到 $iface 的 IRQ（可能为虚拟 NIC、驱动未暴露或权限受限），跳过 affinity"
-    echo "      如需手动匹配，可设置 IRQ_MATCH_HINT，例如：IRQ_MATCH_HINT='virtio|ena|ixgbe'"
-    return 0
-  fi
-  local idx=0 count=0
-  for irq in ${irqs:-}; do
-    local cpu=$((idx % ncpu))
-    local mask
-    mask="$(printf "%x" $((1<<cpu)))"
-    echo "$mask" >/proc/irq/"$irq"/smp_affinity 2>/dev/null || true
-    idx=$((idx+1)); count=$((count+1))
-  done
-  echo "[OK] 已设置 $iface 的 IRQ 亲和性分散到 ${ncpu} 核（共 ${count} 个中断；部分云环境可能被宿主机忽略）"
-}
-
-# ---- helper: RPS 调优（多核接收包调度） ----
-apply_rps_tuning_for_iface() {
-  local iface="$1"
-  [ "${SET_RPS}" = "1" ] || return 0
-  local mask="${RPS_CPUS_MASK}"
-  if [ -z "$mask" ]; then
-    local ncpu
-    if command -v nproc >/dev/null 2>&1; then ncpu="$(nproc)"; else ncpu="$(grep -cE '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"; fi
-    [ -z "$ncpu" ] && ncpu=1
-    # 使用所有 CPU 的掩码（避免 32 位溢出时退化为低位）
-    if [ "$ncpu" -le 32 ]; then
-      mask="$(printf "%x" $(( (1<<ncpu) - 1 )) )"
-    else
-      mask="ffffffff"
-    fi
-  fi
-  for f in /sys/class/net/"$iface"/queues/rx-*/rps_cpus; do
-    [ -f "$f" ] && echo "$mask" >"$f" 2>/dev/null || true
-  done
-  for f in /sys/class/net/"$iface"/queues/rx-*/rps_flow_cnt; do
-    [ -f "$f" ] && echo "${RPS_FLOW_CNT}" >"$f" 2>/dev/null || true
-  done
-  echo "[OK] 已应用 $iface 的 RPS（mask=$mask flow_cnt=${RPS_FLOW_CNT}）"
-}
-
-# ---- helper: ingress policing（限制突发，降低上游丢包放大） ----
-apply_ingress_policing_for_iface() {
-  local iface="$1"
-  [ "${ENABLE_INGRESS_POLICING}" = "1" ] || return 0
-  local rate="${INGRESS_RATE:-${TC_MAX_RATE:-}}"
-  if [ -z "$rate" ]; then
-    echo "[WARN] 未设置 INGRESS_RATE/TC_MAX_RATE，跳过 ingress policing"
-    return 0
-  fi
-  command -v tc >/dev/null 2>&1 || { echo "[WARN] 缺少 tc，无法应用 ingress policing"; return 0; }
-  tc qdisc show dev "$iface" | grep -q "ffff:" || tc qdisc add dev "$iface" handle ffff: ingress >/dev/null 2>&1 || true
-  # 使用 u32 通配，基于 action police 的速率与突发控制
-  if tc filter replace dev "$iface" parent ffff: protocol all u32 match u32 0 0 police rate "$rate" burst "${INGRESS_BURST}" conform-exceed drop >/dev/null 2>&1; then
-    echo "[OK] 已启用 ingress policing：rate=$rate burst=${INGRESS_BURST}"
-  else
-    echo "[WARN] tc filter/警察（police）失败：可能内核/驱动不支持或权限受限，已跳过"
-  fi
-}
-
-# ---- helper: 生成自签证书并导入到 /acme/shared ----
+# ---- helper: 优先复用已有自签证书，否则生成并导入到 /acme/shared ----
 generate_self_signed_cert() {
   local dom="${SWITCHED_DOMAIN:-${HY2_DOMAIN:-}}"
   local ip="$SELECTED_IP"
   mkdir -p /acme/shared
+  if [ -s /acme/shared/fullchain.pem ] && [ -s /acme/shared/privkey.pem ]; then
+    USE_EXISTING_CERT=1
+    USE_CERT_PATH="/acme/shared/fullchain.pem"
+    USE_KEY_PATH="/acme/shared/privkey.pem"
+    chmod 700 /acme/shared 2>/dev/null || true
+    chmod 600 "$USE_KEY_PATH" 2>/dev/null || true
+    chmod 644 "$USE_CERT_PATH" 2>/dev/null || true
+    echo "[OK] 复用已有自签证书：/acme/shared/fullchain.pem"
+    return 0
+  fi
   if ! command -v openssl >/dev/null 2>&1; then
     echo "[*] 未检测到 openssl，尝试自动安装..."
     if command -v apt-get >/dev/null 2>&1; then
@@ -912,11 +335,6 @@ generate_self_signed_cert() {
         -keyout /acme/shared/privkey.pem -out /acme/shared/fullchain.pem \
         -days 365 -subj "/CN=${cn_val}" >/dev/null 2>&1 || true
     fi
-    # 计算 SPKI pin（供客户端使用 pinSHA256，避免 insecure）
-    PIN_SHA256="$(openssl x509 -pubkey -in /acme/shared/fullchain.pem 2>/dev/null | \
-      openssl pkey -pubin -outform DER 2>/dev/null | \
-      openssl dgst -sha256 -binary 2>/dev/null | base64 2>/dev/null)"
-    PIN_SHA256="${PIN_SHA256:-}"
     USE_EXISTING_CERT=1
     USE_CERT_PATH="/acme/shared/fullchain.pem"
     USE_KEY_PATH="/acme/shared/privkey.pem"
@@ -1245,6 +663,7 @@ if ! command -v hysteria >/dev/null 2>&1; then
   done
   if [ "$download_ok" -ne 1 ]; then
     echo "[ERROR] 无法下载 hysteria 二进制。请检查网络，或设置 HYST_DOWNLOAD_BASE 为镜像地址。"
+    exit 1
   fi
   chmod +x /usr/local/bin/hysteria
   verify_ok=0
@@ -1275,9 +694,6 @@ fi
 if [ -z "${HY2_PASS}" ]; then
   HY2_PASS="$(openssl rand -hex 16)"
 fi
-if [ -z "${OBFS_PASS}" ]; then
-  OBFS_PASS="$(openssl rand -hex 8)"
-fi
 
 # 若未提供 HY2_PORTS，则尝试交互式生成端口列表
 maybe_init_ports_from_input
@@ -1293,8 +709,6 @@ USE_EXISTING_CERT=1
 USE_CERT_PATH=""
 USE_KEY_PATH=""
 generate_self_signed_cert
-apply_runtime_net_tuning || true
-apply_extreme_loss_mitigation || true
 
 # ===========================
 # 6) 写 hysteria 配置（始终 TLS，自签证书）
@@ -1353,11 +767,6 @@ fi
 # 8) 进程与端口检查（已简化，移除 ACME 等待/恢复）
 # ===========================
 
-# 在完成证书流程后，若未启用多端口，则至少放行主端口 UDP
-if [ -z "${HY2_PORTS:-}" ]; then
-  ensure_udp_ports_open "$HY2_PORT"
-fi
-
 setup_auto_reboot_cron
 
 print_hysteria_process_info
@@ -1374,24 +783,14 @@ if [ -n "${HY2_PORTS:-}" ]; then
 fi
 
 # ===========================
-# 9) 构造 hysteria2 URI（URLEncode 关键字段，并处理空 pin）
+# 9) 构造 hysteria2 URI
 # ===========================
-# 确保 PIN_SHA256 非空（若空则用空字符串）
-if [ -z "${PIN_SHA256:-}" ]; then
-  PIN_SHA256=""
-fi
-
 PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$HY2_PASS")"
-OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$OBFS_PASS")"
 NAME_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$NAME_TAG")"
-PIN_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$PIN_SHA256")"
 
-INSECURE_VAL=0
+INSECURE_VAL=1
 URI="hysteria2://${PASS_ENC}@${SELECTED_IP}:${HY2_PORT}/?protocol=udp"
-if [ "${DISABLE_OBFS}" != "1" ]; then
-  URI="${URI}&obfs=salamander&obfs-password=${OBFS_ENC}"
-fi
-URI="${URI}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+URI="${URI}&insecure=${INSECURE_VAL}#${NAME_ENC}"
 
 echo
 echo "=========== HY2 节点（URI） ==========="
@@ -1403,14 +802,10 @@ if [ -n "${HY2_PORTS:-}" ]; then
   IFS=',' read -r -a print_ports <<<"$PORT_LIST_CSV"
   for pt in "${print_ports[@]}"; do
     if [ "$pt" = "$HY2_PORT" ]; then continue; fi
-    P_PASS="${PASS_MAP[$pt]}"; P_OBFS="${OBFS_MAP[$pt]}"
+    P_PASS="${PASS_MAP[$pt]}"
     P_PASS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_PASS")"
-    P_OBFS_ENC="$(python3 -c "import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=''))" "$P_OBFS")"
     P_URI="hysteria2://${P_PASS_ENC}@${SELECTED_IP}:${pt}/?protocol=udp"
-    if [ "${DISABLE_OBFS}" != "1" ]; then
-      P_URI="${P_URI}&obfs=salamander&obfs-password=${P_OBFS_ENC}"
-    fi
-    P_URI="${P_URI}&insecure=${INSECURE_VAL}&pinSHA256=${PIN_ENC}#${NAME_ENC}"
+    P_URI="${P_URI}&insecure=${INSECURE_VAL}#${NAME_ENC}"
     echo "$pt -> $P_URI"
   done
   echo "======================================="
@@ -1453,20 +848,14 @@ IFS=',' read -r -a ports_all <<<"$PORT_LIST_CSV"
 for pt in "${ports_all[@]}"; do
   if [ "$pt" = "$HY2_PORT" ]; then
     P_PASS="$HY2_PASS"
-    P_OBFS="$OBFS_PASS"
   else
     P_PASS="${PASS_MAP[$pt]}"
-    P_OBFS="${OBFS_MAP[$pt]}"
   fi
 
   # SNI 与证书校验
   SNI_LINE=""
-  if [ "${DISABLE_SELF_SIGNED:-1}" -eq 0 ] || [ "${SELF_SIGNED_USED:-0}" -eq 1 ]; then
-    SNI_LINE=""
-  else
-    if [ -n "${HY2_DOMAIN:-}" ]; then
-      SNI_LINE="sni: ${HY2_DOMAIN}"
-    fi
+  if [ -n "${HY2_DOMAIN:-}" ]; then
+    SNI_LINE="sni: ${HY2_DOMAIN}"
   fi
   VERIFY_LINE=""
   if [ "${SELF_SIGNED_USED:-0}" -eq 1 ] && [ "${DISABLE_SELF_SIGNED:-1}" -ne 0 ]; then
@@ -1480,12 +869,6 @@ for pt in "${ports_all[@]}"; do
     port: ${pt}
     password: ${P_PASS}
 EOF
-  if [ "${DISABLE_OBFS}" != "1" ]; then
-    cat >>"${TMPF}" <<EOF
-    obfs: salamander
-    obfs-password: ${P_OBFS}
-EOF
-  fi
   [ -n "${SNI_LINE}" ] && echo "    ${SNI_LINE}" >>"${TMPF}"
   [ -n "${VERIFY_LINE}" ] && echo "    ${VERIFY_LINE}" >>"${TMPF}"
 done
@@ -1538,19 +921,36 @@ fi
 cat >>"${TMPF}" <<'EOF'
 
 rules:
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
   - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-SUFFIX,gov.cn,DIRECT
+  - DOMAIN-SUFFIX,edu.cn,DIRECT
+  - DOMAIN-SUFFIX,alicdn.com,DIRECT
+  - DOMAIN-SUFFIX,jd.com,DIRECT
+  - DOMAIN-SUFFIX,bilibili.com,DIRECT
   - DOMAIN-KEYWORD,baidu,DIRECT
   - DOMAIN-KEYWORD,taobao,DIRECT
+  - DOMAIN-KEYWORD,tmall,DIRECT
+  - DOMAIN-KEYWORD,jd,DIRECT
   - DOMAIN-KEYWORD,qq,DIRECT
   - DOMAIN-KEYWORD,weixin,DIRECT
+  - DOMAIN-KEYWORD,wechat,DIRECT
   - DOMAIN-KEYWORD,alipay,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,224.0.0.0/4,DIRECT,no-resolve
+  - IP-CIDR,240.0.0.0/4,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - IP-CIDR6,fc00::/7,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
   - GEOIP,CN,DIRECT
 EOF
-if [ "${ENABLE_FALLBACK}" = "1" ]; then
-  echo "  - MATCH,故障转移" >>"${TMPF}"
-else
-  echo "  - MATCH,🚀 节点选择" >>"${TMPF}"
-fi
+echo "  - MATCH,🚀 节点选择" >>"${TMPF}"
 
 mv -f "${TMPF}" "${TARGET}"
 echo "[OK] Clash 订阅已写入：${TARGET}"
