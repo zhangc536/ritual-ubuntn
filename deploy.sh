@@ -118,7 +118,9 @@ const account = Account.fromPrivateKey({ privateKey });
 
 const signer = {
   accountAddress: account.accountAddress,
-  sign: account.sign.bind(account),
+  sign: async (data) => {
+    return account.sign(data);
+  },
 };
 
 const client = new ShelbyNodeClient({
