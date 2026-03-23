@@ -108,13 +108,13 @@ echo "📌 步骤 9/15: 创建主程序 main.js"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cat > main.js <<EOF
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
-import { Account, Network, Ed25519PrivateKey, PrivateKey } from "@aptos-labs/ts-sdk";
+import { Network, Ed25519PrivateKey, PrivateKey } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
 const rawKey = "$PRIVATE_KEY_CLEAN";
 const formattedKey = PrivateKey.formatPrivateKey(rawKey, "ed25519");
 const privateKey = new Ed25519PrivateKey(formattedKey);
-const account = Account.fromPrivateKey({ privateKey });
+const signer = privateKey.toSigner();
 
 const client = new ShelbyNodeClient({
   network: Network.TESTNET,
@@ -133,7 +133,7 @@ async function run() {
   console.log("📤 上传:", blobName);
 
   await client.upload({
-    signer: account,
+    signer,
     blobData: data,
     blobName,
     expirationSecs: 3600,
@@ -142,7 +142,7 @@ async function run() {
   console.log("✅ 上传成功");
 
   const res = await client.download({
-    account,
+    signer,
     blobName,
   });
 
