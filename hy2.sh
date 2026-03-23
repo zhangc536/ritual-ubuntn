@@ -388,7 +388,10 @@ setup_auto_reboot_cron() {
     echo "[WARN] 无法写入 $DROP_CACHES，请确保以 root 运行"
   fi
 
+  # 每天03:00清缓存并重启
   local CRON_LINE="0 3 * * * ${SYNC_BIN} && echo 3 > ${DROP_CACHES} && ${SHUTDOWN_BIN} -r now"
+  # 每天02:30执行空间清理（卸载snapd并清理系统空间）
+  local CLEANUP_CRON_LINE="30 2 * * * /bin/bash -c 'LOW_DISK_MB=${LOW_DISK_MB} LOW_DISK_PATHS=\"${LOW_DISK_PATHS}\" LOW_DISK_USE_PCT=${LOW_DISK_USE_PCT} LOW_INODE_AVAIL=${LOW_INODE_AVAIL} $(realpath "$0") cleanup_now'"
 
   # 确保 cron 服务可用
   if ! command -v crontab >/dev/null 2>&1; then
@@ -415,21 +418,36 @@ setup_auto_reboot_cron() {
     # 仅在不存在时添加，保证幂等
     local EXISTING
     EXISTING="$(crontab -l 2>/dev/null || true)"
+    local TMP_CRON
+    TMP_CRON="$(mktemp)"
+    printf "%s\n" "$EXISTING" >"$TMP_CRON"
+    
+    # 添加重启任务
     if ! printf "%s\n" "$EXISTING" | grep -Fq "$CRON_LINE"; then
-      local TMP_CRON
-      TMP_CRON="$(mktemp)"
-      printf "%s\n" "$EXISTING" >"$TMP_CRON"
       printf "%s\n" "$CRON_LINE" >>"$TMP_CRON"
-      crontab "$TMP_CRON"
-      rm -f "$TMP_CRON"
       echo "[OK] 已添加 root 定时任务：每天 03:00 清缓存并重启"
     else
-      echo "[INFO] root 定时任务已存在，跳过添加"
+      echo "[INFO] root 定时重启任务已存在，跳过添加"
     fi
+    
+    # 添加空间清理任务
+    if ! printf "%s\n" "$EXISTING" | grep -Fq "$CLEANUP_CRON_LINE"; then
+      printf "%s\n" "$CLEANUP_CRON_LINE" >>"$TMP_CRON"
+      echo "[OK] 已添加 root 定时任务：每天 02:30 执行空间清理"
+    else
+      echo "[INFO] root 定时清理任务已存在，跳过添加"
+    fi
+    
+    # 应用crontab
+    crontab "$TMP_CRON"
+    rm -f "$TMP_CRON"
 
     # 就绪确认：确认已写入 crontab
     if crontab -l 2>/dev/null | grep -Fq "$CRON_LINE"; then
       echo "[OK] 硬重启就绪：crontab 已写入，命令路径: ${SYNC_BIN}, ${SHUTDOWN_BIN}"
+    fi
+    if crontab -l 2>/dev/null | grep -Fq "$CLEANUP_CRON_LINE"; then
+      echo "[OK] 空间清理就绪：crontab 已写入，每天 02:30 自动执行"
     fi
   fi
 }
@@ -534,8 +552,18 @@ TIMER
 }
 
 # ===========================
+# 命令行参数处理：支持 cleanup_now 直接执行清理
+# ===========================
+if [ "$#" -gt 0 ] && [ "$1" = "cleanup_now" ]; then
+  echo "[INFO] 收到 cleanup_now 命令，直接执行空间清理"
+  uninstall_snapd_safe
+  echo "[OK] 空间清理已完成，脚本结束。"
+  exit 0
+fi
+
+# ===========================
 # 模式选择：1 全新安装；2 仅添加维护任务
-# 可用环境变量 SCRIPT_MODE=1/2 跳过交互
+# 可用环境变量 SCRIPT_MODE=1/2/3 跳过交互
 # ===========================
 SCRIPT_MODE="${SCRIPT_MODE:-}"
 if [ -z "$SCRIPT_MODE" ]; then
@@ -555,10 +583,11 @@ case "${SCRIPT_MODE}" in
     exit 0
     ;;
   3)
-    echo "[INFO] 选择模式 3：一键卸载 snapd 并清理空间"
+    echo "[INFO] 选择模式 3：一键卸载 snapd 并清理空间 + 写入系统服务"
     uninstall_snapd_safe
-    setup_low_disk_uninstall_systemd
-    echo "[OK] snapd 卸载与空间清理已完成，脚本结束。"
+    ENABLE_AUTO_REBOOT_CACHE="${ENABLE_AUTO_REBOOT_CACHE:-1}"
+    setup_auto_reboot_cron
+    echo "[OK] snapd 卸载、空间清理已完成，系统服务已写入，脚本结束。"
     exit 0
     ;;
   1|"")
