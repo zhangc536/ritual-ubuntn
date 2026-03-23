@@ -174,8 +174,8 @@ while true
 do
     echo "🚀 执行任务 \$(date)"
     node ./main.js
-    echo "⏳ 等待 30 秒..."
-    sleep 30
+    echo "⏳ 等待 12 小时..."
+    sleep 43200
 done
 EOF
 
