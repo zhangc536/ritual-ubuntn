@@ -108,7 +108,7 @@ echo "📌 步骤 9/15: 创建主程序 main.js"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cat > main.js <<EOF
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
-import { Account, PrivateKey, Aptos, Ed25519PrivateKey } from "@aptos-labs/ts-sdk";
+import { Account, PrivateKey, Aptos, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
 const rawKey = "$PRIVATE_KEY_CLEAN";
@@ -117,14 +117,7 @@ const privateKey = new Ed25519PrivateKey(formatted);
 const account = Account.fromPrivateKey({ privateKey });
 
 const client = new ShelbyNodeClient({
-  clientConfig: {
-    fullnode: {
-      endpoint: "https://api.shelby.xyz",
-    },
-    indexer: {
-      endpoint: "https://indexer.shelby.xyz",
-    },
-  },
+  network: Network.TESTNET,
 });
 
 const aptos = new Aptos({
