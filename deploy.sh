@@ -124,7 +124,7 @@ const client = new ShelbyNodeClient({
 });
 
 const aptos = new Aptos({
-  fullnode: "https://fullnode.shelby.xyz",
+  fullnode: "https://api.shelby.xyz",
 });
 
 async function checkBalance(address) {
