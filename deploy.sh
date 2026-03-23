@@ -108,7 +108,7 @@ echo "📌 步骤 9/15: 创建主程序 main.js"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cat > main.js <<EOF
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
-import { Account, PrivateKey, Aptos, AptosConfig, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
+import { Account, PrivateKey, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
 const rawKey = "$PRIVATE_KEY_CLEAN";
@@ -120,51 +120,6 @@ const client = new ShelbyNodeClient({
   network: Network.TESTNET,
 });
 
-const aptos = new Aptos(new AptosConfig({
-  network: Network.TESTNET,
-}));
-
-async function checkBalance(address) {
-  try {
-    const balance = await aptos.getAccountAPTAmount({
-      accountAddress: address,
-    });
-    console.log("💰 当前余额:", balance, "APT");
-    return Number(balance);
-  } catch (err) {
-    console.error("❌ 查询余额失败:", err);
-    return 0;
-  }
-}
-
-async function checkShelbyUSD(address) {
-  try {
-    const resources = await aptos.getAccountResources({
-      accountAddress: address,
-    });
-
-    let found = false;
-
-    for (const r of resources) {
-      if (
-        r.type.toLowerCase().includes("shelby") &&
-        r.type.toLowerCase().includes("blob")
-      ) {
-        console.log("📦 发现资源:", r.type);
-        console.log("📊 内容:", JSON.stringify(r.data, null, 2));
-        found = true;
-      }
-    }
-
-    if (!found) {
-      console.log("⚠️ 未找到 ShelbyUSD 相关资源（可能没有余额）");
-    }
-
-  } catch (err) {
-    console.error("❌ 查询 ShelbyUSD 失败:", err);
-  }
-}
-
 async function run() {
   const file = "./data/test.txt";
 
@@ -173,15 +128,7 @@ async function run() {
   }
 
   const address = account.accountAddress.toString();
-
-  await checkShelbyUSD(address);
-
-  const balance = await checkBalance(address);
-
-  if (balance < 1) {
-    console.log("⚠️ 余额不足，跳过本次上传");
-    return;
-  }
+  console.log("📍 地址:", address);
 
   const data = new Uint8Array(fs.readFileSync(file));
   const blobName = "auto-" + Date.now() + ".txt";
