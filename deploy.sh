@@ -76,6 +76,8 @@ INFO=$(node gen_wallet.js)
 ADDRESS=$(echo "$INFO" | grep ADDRESS | cut -d '=' -f2)
 PRIVATE_KEY=$(echo "$INFO" | grep PRIVATE_KEY | cut -d '=' -f2)
 
+PRIVATE_KEY_CLEAN=$(echo "$PRIVATE_KEY" | sed 's/^ed25519-priv-//')
+
 echo "✅ 钱包生成完成"
 echo ""
 
@@ -109,7 +111,7 @@ import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
 import { Account, Network, Ed25519PrivateKey } from "@aptos-labs/ts-sdk";
 import fs from "fs";
 
-const privateKey = new Ed25519PrivateKey("$PRIVATE_KEY");
+const privateKey = new Ed25519PrivateKey("$PRIVATE_KEY_CLEAN");
 const account = Account.fromPrivateKey({ privateKey });
 
 const client = new ShelbyNodeClient({
