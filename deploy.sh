@@ -116,13 +116,6 @@ const formatted = PrivateKey.formatPrivateKey(rawKey, "ed25519");
 const privateKey = new Ed25519PrivateKey(formatted);
 const account = Account.fromPrivateKey({ privateKey });
 
-const signer = {
-  accountAddress: account.accountAddress,
-  sign: async (data) => {
-    return account.sign(data);
-  },
-};
-
 const client = new ShelbyNodeClient({
   network: Network.TESTNET,
 });
@@ -140,16 +133,16 @@ async function run() {
   console.log("📤 上传:", blobName);
 
   await client.upload({
-    signer,
+    signer: account,
     blobData: data,
     blobName,
-    expirationSecs: 3600,
+    expirationMicros: BigInt(Date.now()) * 1000n + 3600_000_000n,
   });
 
   console.log("✅ 上传成功");
 
   const res = await client.download({
-    signer,
+    signer: account,
     blobName,
   });
 
@@ -158,7 +151,10 @@ async function run() {
   console.log("📥 下载完成:", blobName);
 }
 
-run();
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 EOF
 
 echo "✅ main.js 创建完成"
