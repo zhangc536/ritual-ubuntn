@@ -125,6 +125,14 @@ write_hysteria_config_for_port() {
   cat >"/etc/hysteria/config-${port}.yaml" <<EOF
 listen: :${port}
 protocol: udp
+ignoreClientBandwidth: true
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  keepAlivePeriod: 10s
 
 auth:
   type: password
@@ -144,6 +152,14 @@ write_hysteria_main_config() {
   cat >/etc/hysteria/config.yaml <<EOF
 listen: :${HY2_PORT}
 protocol: udp
+ignoreClientBandwidth: true
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  keepAlivePeriod: 10s
 
 auth:
   type: password
@@ -831,14 +847,21 @@ external-controller: 127.0.0.1:9090
 dns:
   enable: true
   listen: 0.0.0.0:53
+  ipv6: false
   default-nameserver:
     - 223.5.5.5
-    - 8.8.8.8
+    - 119.29.29.29
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+    - "*.arpa"
+    - "time.*.com"
+    - "ntp.*.com"
   nameserver:
-    - https://doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
+    - "https://1.1.1.1/dns-query#🚀 节点选择"
+    - "https://8.8.8.8/dns-query#🚀 节点选择"
 
 proxies:
 EOF
